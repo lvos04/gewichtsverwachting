@@ -1,6 +1,7 @@
 name: Tests en container
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read

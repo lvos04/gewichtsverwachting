@@ -974,3 +974,59 @@ progress {
     min-height: 40px;
   }
 }
+.season-fields {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  margin: 0 0 17px;
+  min-width: 0;
+}
+.season-fields legend {
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 5px;
+}
+.season-fields .field {
+  margin-bottom: 0;
+}
+.curve-point {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.curve-point .field {
+  min-width: 0;
+}
+.curve-point button {
+  margin-top: 7px;
+}
+.history-preview {
+  max-height: 420px;
+  overflow: auto;
+}
+.history-preview th {
+  position: sticky;
+  top: 0;
+}
+.history-row-editor {
+  padding: 16px;
+  background: #f7f8f2;
+  border-radius: 7px;
+  margin: 12px 0;
+}
+.history-row-editor summary {
+  margin-bottom: 12px;
+}
+@media (max-width: 720px) {
+  .season-fields .form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .curve-point {
+    gap: 8px;
+  }
+  .curve-point label {
+    font-size: 11px;
+  }
+}
+.two>div,.two>aside{min-width:0}.card p,.card summary{overflow-wrap:anywhere}@media(max-width:1050px){.two{grid-template-columns:minmax(0,1fr)}}

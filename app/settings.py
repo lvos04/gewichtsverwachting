@@ -1,6 +1,7 @@
 """Audited effective-date application settings, managed through the web UI."""
 from datetime import datetime, timezone
 import os
+from typing import Literal
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +26,11 @@ class AppSettings(BaseModel):
     ridge_alpha: float = Field(default=10.0, gt=0, le=10000)
     min_training_cultivations: int = Field(default=30, ge=30, le=10000)
     required_unseen_rounds: int = Field(default=2, ge=2, le=20)
+    model_feature_profile: Literal['basic', 'light', 'climate'] = 'basic'
+    environment_min_coverage: float = Field(default=1.0, ge=0.9, le=1.0)
+    environment_include_daylight_estimate: bool = False
+    environment_include_co2: bool = False
+    environment_min_training_cultivations: int = Field(default=60, ge=30, le=10000)
     priority_algemeen_bedrijf: int = Field(default=50, ge=0, le=100)
     priority_klimaat: int = Field(default=40, ge=0, le=100)
     priority_belichting: int = Field(default=40, ge=0, le=100)

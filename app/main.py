@@ -14,10 +14,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text, select, func
 
-from . import auth, core, importer, forecast, operations, settings
+from . import auth, core, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
 from .backups import create_backup
 from .db import DATA_DIR, SessionLocal, engine
-from .models import Cultivation, Measurement, PlanningVersion, Event
+from .models import (Cultivation, CultivationRevision, Measurement, PlanningVersion, Event,
+                     Harvest, MappingRevision, VarietyTargetVersion, CropProfileVersion)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / 'static'
@@ -41,13 +42,34 @@ def refresh_due_forecasts():
     """Refresh derived snapshots daily and when a registered fact changes."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with SessionLocal() as db:
-        cultivations = db.scalars(select(Cultivation).where(Cultivation.status.in_(['active', 'planned']))).all()
+        # Imported observations, changed calibrations, model switches and target
+        # edits affect existing crops too. Include scheduled settings when they
+        # take effect, while ignoring future-recorded facts.
+        global_times = []
+        for column in (importer.PrivaSource.activated_at, importer.PrivaSource.revoked_at,
+                       importer.Calibration.created_at, MappingRevision.created_at,
+                       VarietyTargetVersion.created_at, CropProfileVersion.created_at,
+                       CultivationRevision.created_at, forecast.ModelArtifact.created_at,
+                       forecast.ModelActivation.created_at, Harvest.created_at,
+                       legacy_lighting.LegacyLightingJob.activated_at, legacy_lighting.LegacyLightingJob.revoked_at):
+            value = db.scalar(select(func.max(column)).where(column <= now))
+            if value is not None:
+                global_times.append(value)
+        for column in (settings.SettingsVersion.created_at, settings.SettingsVersion.effective_from):
+            value = db.scalar(select(func.max(column)).where(settings.SettingsVersion.created_at <= now,
+                                                          settings.SettingsVersion.effective_from <= now))
+            if value is not None:
+                global_times.append(value)
+        global_change = max(global_times, default=None)
+        cultivations = db.scalars(select(Cultivation).where(Cultivation.status.in_(['active', 'planned']),
+            Cultivation.id.in_(select(CultivationRevision.cultivation_id).where(CultivationRevision.created_at <= now)))).all()
         for cultivation in cultivations:
             last = db.scalar(select(func.max(forecast.ForecastSnapshot.created_at)).where(forecast.ForecastSnapshot.cultivation_id == cultivation.id))
             changed = [db.scalar(select(func.max(table.created_at)).where(table.cultivation_id == cultivation.id))
                        for table in (Measurement, PlanningVersion, Event)]
-            fresh_fact = max((value for value in changed if value is not None), default=None)
-            if last is None or (now - last).total_seconds() >= 86400 or (fresh_fact and fresh_fact > last):
+            fresh_fact = max((value for value in [*changed, global_change] if value is not None), default=None)
+            if (last is None or (now - last).total_seconds() >= 86400 or
+                    forecast.local_date(last) < forecast.local_date(now) or (fresh_fact and fresh_fact > last)):
                 forecast.forecast(db, cultivation.id, now)
 
 async def daily_backups():
@@ -78,6 +100,7 @@ async def lifespan(app):
     with SessionLocal() as db:
         core.seed_data(db)
     importer.recover_jobs()
+    legacy_lighting.recover_jobs()
     task = asyncio.create_task(daily_backups())
     yield
     task.cancel()
@@ -85,9 +108,10 @@ async def lifespan(app):
         await task
     except asyncio.CancelledError:
         pass
+    legacy_lighting.shutdown_worker()
     importer.shutdown_worker()
 
-app = FastAPI(title='Gewichtsverwachting chrysant', version='0.1.1', lifespan=lifespan,
+app = FastAPI(title='Gewichtsverwachting chrysant', version='0.2.0', lifespan=lifespan,
               docs_url=None if os.environ.get('DISABLE_API_DOCS') == '1' else '/docs')
 
 app.add_middleware(importer.ImportUploadLimitMiddleware)
@@ -120,12 +144,17 @@ app.include_router(importer.router)
 app.include_router(forecast.router)
 app.include_router(operations.router)
 app.include_router(settings.router)
+app.include_router(crop_profiles.router)
+app.include_router(environment.router)
+app.include_router(history_import.router)
+app.include_router(insights.router)
+app.include_router(legacy_lighting.router)
 
 @app.get('/health', include_in_schema=False)
 def health():
     with engine.connect() as connection:
         connection.execute(text('SELECT 1'))
-    return {'status': 'ok', 'version': '0.1.1'}
+    return {'status': 'ok', 'version': '0.2.0'}
 
 @app.get('/sw.js', include_in_schema=False)
 def service_worker():

@@ -196,3 +196,48 @@ def test_effective_settings_drive_login_and_measurement_tolerance(api):
     r=c.post('/api/auth/login',json={'username':'owner','password':'very long password'})
     assert r.status_code==200
     assert 'Max-Age=7200' in r.headers['set-cookie']
+
+def test_inactive_varieties_remain_available_for_history(api):
+    c,_=api
+    c.post('/api/auth/setup',json={'username':'owner','password':'very long password'})
+    created=c.post('/api/varieties',json={'name':'baltazar','target_weight_g':110,'active':False})
+    assert created.status_code==200 and created.json()['active'] is False
+    vid=created.json()['id']
+    base={'round_name':'R','bay_number':1,'variety_id':vid,'beds':6}
+    assert c.post('/api/cultivations',json=base).status_code==422
+    historical=c.post('/api/cultivations',json={**base,'status':'historical'})
+    assert historical.status_code==200
+    assert any(v['id']==vid and v['active'] is False for v in c.get('/api/varieties').json())
+    assert c.patch(f'/api/varieties/{vid}',json={'active':True}).json()['target_weight_g']==110
+    current=c.post('/api/cultivations',json={**base,'status':'active'})
+    assert current.status_code==200
+    assert c.patch(f'/api/varieties/{vid}',json={'active':False}).status_code==200
+    assert c.get(f"/api/cultivations/{current.json()['id']}").status_code==200
+    assert c.patch(f'/api/varieties/{vid}',json={'target_weight_g':111}).json()['active'] is False
+
+def test_variety_target_versions_and_future_harvest_dates(api):
+    from datetime import datetime, timezone, timedelta
+    from app.core import target_at
+    c,sessions=api
+    c.post('/api/auth/setup',json={'username':'owner','password':'very long password'})
+    vid=c.post('/api/varieties',json={'name':'nieuw','target_weight_g':90}).json()['id']
+    with sessions() as db:
+        from app.models import VarietyTargetVersion
+        revision=db.scalar(select(VarietyTargetVersion).where(VarietyTargetVersion.variety_id==vid))
+        revision.created_at=datetime(2020,1,1); db.commit()
+        assert target_at(db,vid,datetime(2019,12,31)) is None
+        assert target_at(db,vid,datetime(2020,1,2)).target_weight_g==90
+    assert c.patch(f'/api/varieties/{vid}',json={'target_weight_g':110}).status_code==200
+    assert c.patch(f'/api/varieties/{vid}',json={'active':False}).status_code==200
+    versions=c.get(f'/api/varieties/{vid}/targets').json()
+    assert [v['target_weight_g'] for v in versions]==[110,90]
+    with sessions() as db:
+        assert target_at(db,vid,datetime(2021,1,1)).target_weight_g==90
+        assert target_at(db,vid,datetime.now(timezone.utc)).target_weight_g==110
+    c.patch(f'/api/varieties/{vid}',json={'active':True})
+    cid=c.post('/api/cultivations',json={'round_name':'R','bay_number':1,'variety_id':vid,'beds':6}).json()['id']
+    from zoneinfo import ZoneInfo
+    tomorrow=(datetime.now(ZoneInfo('Europe/Amsterdam')).date()+timedelta(days=1)).isoformat()
+    assert c.post(f'/api/cultivations/{cid}/harvest',json={'start_date':tomorrow,'weight_g':100}).status_code==422
+    assert c.post(f'/api/cultivations/{cid}/harvest',json={'end_date':tomorrow,'weight_g':100}).status_code==422
+    assert c.post(f'/api/cultivations/{cid}/planning',json={'expected_harvest_date':tomorrow}).status_code==200

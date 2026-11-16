@@ -53,10 +53,11 @@ class ImportUploadLimitMiddleware:
         self.max_bytes=max_bytes
 
     async def __call__(self,scope,receive,send):
-        if scope.get('type')!='http' or scope.get('method')!='POST' or scope.get('path','').rstrip('/') not in ('/api/imports','/api/scans'):
+        if scope.get('type')!='http' or scope.get('method')!='POST' or scope.get('path','').rstrip('/') not in ('/api/imports','/api/scans','/api/history-imports'):
             return await self.app(scope,receive,send)
         from starlette.responses import JSONResponse
-        max_bytes = self.max_bytes if scope.get('path','').rstrip('/') == '/api/imports' else 16*1024*1024
+        path = scope.get('path','').rstrip('/')
+        max_bytes = self.max_bytes if path == '/api/imports' else (33*1024*1024 if path == '/api/history-imports' else 16*1024*1024)
         headers=dict(scope.get('headers',[]))
         try:
             length=int(headers.get(b'content-length',b'0'))

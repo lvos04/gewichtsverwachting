@@ -27,6 +27,14 @@ class Variety(Base):
     id: Mapped[int]=mapped_column(primary_key=True)
     name: Mapped[str]=mapped_column(String(100), unique=True)
     target_weight_g: Mapped[float]=mapped_column(Float, default=105)
+    active: Mapped[bool]=mapped_column(Boolean, default=True, server_default='1')
+class VarietyTargetVersion(Base):
+    __tablename__='variety_target_versions'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    variety_id: Mapped[int]=mapped_column(ForeignKey('varieties.id'), index=True)
+    target_weight_g: Mapped[float]=mapped_column(Float)
+    created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow, index=True)
+    author_id: Mapped[int|None]=mapped_column(ForeignKey('users.id'), nullable=True)
 class Bay(Base):
     __tablename__='bays'
     number: Mapped[int]=mapped_column(primary_key=True)
@@ -59,6 +67,10 @@ class PlanningVersion(Base):
     light_out_date: Mapped[object|None]=mapped_column(Date, nullable=True)
     expected_harvest_date: Mapped[object|None]=mapped_column(Date, nullable=True)
     density: Mapped[float|None]=mapped_column(Float, nullable=True)
+    planned_stems: Mapped[int|None]=mapped_column(Integer, nullable=True)
+    interlight_description: Mapped[str|None]=mapped_column(Text, nullable=True)
+    lighting_schedule: Mapped[str|None]=mapped_column(Text, nullable=True)
+    planned_lamp_hours: Mapped[float|None]=mapped_column(Float, nullable=True)
     created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow)
     reason: Mapped[str|None]=mapped_column(Text, nullable=True)
     author_id: Mapped[int]=mapped_column(ForeignKey('users.id'))
@@ -117,6 +129,32 @@ class MappingVersion(Base):
     valid_until: Mapped[object|None]=mapped_column(Date, nullable=True)
     reason: Mapped[str|None]=mapped_column(Text, nullable=True)
     created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow)
+class MappingRevision(Base):
+    __tablename__='mapping_revisions'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    mapping_id: Mapped[int]=mapped_column(ForeignKey('mapping_versions.id'), index=True)
+    bay_number: Mapped[int]=mapped_column(Integer)
+    object_type: Mapped[str]=mapped_column(String(20))
+    object_number: Mapped[int]=mapped_column(Integer)
+    valid_from: Mapped[object]=mapped_column(Date)
+    valid_until: Mapped[object|None]=mapped_column(Date, nullable=True)
+    reason: Mapped[str|None]=mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow, index=True)
+class CropProfileVersion(Base):
+    __tablename__='crop_profile_versions'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    variety_id: Mapped[int]=mapped_column(ForeignKey('varieties.id'), index=True)
+    season_start: Mapped[str]=mapped_column(String(5))
+    season_end: Mapped[str]=mapped_column(String(5))
+    valid_from: Mapped[object]=mapped_column(Date)
+    valid_until: Mapped[object|None]=mapped_column(Date, nullable=True)
+    target_weight_g: Mapped[float|None]=mapped_column(Float, nullable=True)
+    length_curve: Mapped[list]=mapped_column(JSON)
+    interlight_description: Mapped[str|None]=mapped_column(Text, nullable=True)
+    source: Mapped[str]=mapped_column(Text)
+    supersedes_id: Mapped[int|None]=mapped_column(ForeignKey('crop_profile_versions.id'), nullable=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow, index=True)
+    author_id: Mapped[int]=mapped_column(ForeignKey('users.id'))
 class AuditLog(Base):
     __tablename__='audit_logs'
     id: Mapped[int]=mapped_column(primary_key=True)

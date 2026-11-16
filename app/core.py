@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .db import get_db
-from .models import User, Variety, Bay, Cultivation, CultivationRevision, PlanningVersion, Measurement, Stem, Harvest, Event, MappingVersion, AuditLog
+from .models import User, Variety, VarietyTargetVersion, Bay, Cultivation, CultivationRevision, PlanningVersion, Measurement, Stem, Harvest, Event, MappingVersion, MappingRevision, AuditLog
 from .auth import require_user, require_write, require_admin, audit, hash_password, public_user
 router=APIRouter()
 NL=ZoneInfo('Europe/Amsterdam')
@@ -28,6 +28,11 @@ def to_utc(d):
     return (d.replace(tzinfo=NL) if d.tzinfo is None else d).astimezone(timezone.utc).replace(tzinfo=None)
 def obj(x):
     return {c.name:getattr(x,c.name) for c in x.__table__.columns if c.name not in ('password_hash','payload_hash')}
+def mapping_revision(db, mapping):
+    db.add(MappingRevision(mapping_id=mapping.id,bay_number=mapping.bay_number,object_type=mapping.object_type,object_number=mapping.object_number,valid_from=mapping.valid_from,valid_until=mapping.valid_until,reason=mapping.reason))
+def target_at(db, variety_id, as_of):
+    if as_of.tzinfo is not None: as_of=as_of.astimezone(timezone.utc).replace(tzinfo=None)
+    return db.scalar(select(VarietyTargetVersion).where(VarietyTargetVersion.variety_id==variety_id,VarietyTargetVersion.created_at<=as_of).order_by(VarietyTargetVersion.created_at.desc(),VarietyTargetVersion.id.desc()))
 def cultivation_revision(db, c):
     db.add(CultivationRevision(cultivation_id=c.id,category=c.category,label_quality=c.label_quality,status=c.status))
 def get_or_404(db, cls, id):
@@ -38,18 +43,25 @@ def seed_data(db):
     for n in range(1,41):
         dept=1 if n<=9 else 2 if n<=18 else 3 if n<=30 else 4
         if not db.get(Bay,n): db.add(Bay(number=n,department=dept,beds=6))
+    new_varieties=[]
     for name in ('antonov','pjotr','tutu'):
-        if not db.scalar(select(Variety).where(Variety.name==name)): db.add(Variety(name=name,target_weight_g=105))
+        if not db.scalar(select(Variety).where(Variety.name==name)):
+            v=Variety(name=name,target_weight_g=105); db.add(v); new_varieties.append(v)
     db.flush()
+    for v in new_varieties: db.add(VarietyTargetVersion(variety_id=v.id,target_weight_g=v.target_weight_g,author_id=None))
+    new_mappings=[]
     for n in range(1,41):
         dept=1 if n<=9 else 2 if n<=18 else 3 if n<=30 else 4
         for typ,num in (('department',dept),('valve',n),('light',n),('light',100+n)):
             if not db.scalar(select(MappingVersion.id).where(MappingVersion.bay_number==n,MappingVersion.object_type==typ,MappingVersion.object_number==num)):
-                db.add(MappingVersion(bay_number=n,object_type=typ,object_number=num,valid_from=date(2026,11,16),reason='Bevestigde huidige koppeling'))
+                m=MappingVersion(bay_number=n,object_type=typ,object_number=num,valid_from=date(2026,11,16),reason='Bevestigde huidige koppeling'); db.add(m); new_mappings.append(m)
+    db.flush()
+    for m in new_mappings: mapping_revision(db,m)
     db.commit()
 class VarietyIn(CoreSchema):
     name:str=Field(min_length=1,max_length=100)
     target_weight_g:float=Field(default=105,gt=0,le=1000)
+    active:bool=True
 class CultivationIn(CoreSchema):
     round_name:str=Field(min_length=1,max_length=100)
     bay_number:int=Field(ge=1,le=40)
@@ -67,7 +79,11 @@ class PlanningIn(CoreSchema):
     plant_date:date|None=None
     light_out_date:date|None=None
     expected_harvest_date:date|None=None
-    density:float|None=Field(default=None,gt=0)
+    density:float|None=Field(default=None,gt=0,le=1000)
+    planned_stems:int|None=Field(default=None,ge=0)
+    interlight_description:str|None=Field(default=None,max_length=2000)
+    lighting_schedule:str|None=Field(default=None,max_length=2000)
+    planned_lamp_hours:float|None=Field(default=None,ge=0,le=24)
     reason:str|None=None
     @model_validator(mode='after')
     def order(self):
@@ -108,6 +124,8 @@ class HarvestIn(CoreSchema):
     @model_validator(mode='after')
     def valid(self):
         if self.start_date and self.end_date and self.end_date<self.start_date: raise ValueError('Einddatum ligt vóór begindatum')
+        today=datetime.now(NL).date()
+        if (self.start_date and self.start_date>today) or (self.end_date and self.end_date>today): raise ValueError('Werkelijke oogstdata mogen niet in de toekomst liggen')
         if self.quality_classes and len(self.quality_classes)>1 and self.weight_g is not None: raise ValueError('Bewaar meerdere gewichtsklassen afzonderlijk, zonder gemiddeld eindgewicht')
         return self
 class EventIn(CoreSchema):
@@ -203,13 +221,14 @@ def varieties(db:Session=Depends(get_db),user:User=Depends(require_user)): retur
 def add_variety(data:VarietyIn,db:Session=Depends(get_db),user:User=Depends(require_write)):
     name=data.name.strip().lower()
     if not name or db.scalar(select(Variety).where(func.lower(Variety.name)==name)): raise HTTPException(409,'Soort bestaat al of naam is leeg')
-    v=Variety(name=name,target_weight_g=data.target_weight_g); db.add(v); db.flush(); audit(db,user,'create','variety',{'id':v.id}); db.commit(); return obj(v)
+    v=Variety(name=name,target_weight_g=data.target_weight_g,active=data.active); db.add(v); db.flush(); db.add(VarietyTargetVersion(variety_id=v.id,target_weight_g=v.target_weight_g,author_id=user.id)); audit(db,user,'create','variety',{'id':v.id}); db.commit(); return obj(v)
 @router.get('/api/cultivations')
 def cultivations(db:Session=Depends(get_db),user:User=Depends(require_user)): return [obj(c) for c in db.scalars(select(Cultivation).order_by(Cultivation.id.desc()))]
 @router.post('/api/cultivations')
 def add_cultivation(data:CultivationIn,db:Session=Depends(get_db),user:User=Depends(require_write)):
     if db.bind.dialect.name=='sqlite': db.connection().exec_driver_sql('BEGIN IMMEDIATE')
-    get_or_404(db,Bay,data.bay_number); get_or_404(db,Variety,data.variety_id)
+    get_or_404(db,Bay,data.bay_number); variety=get_or_404(db,Variety,data.variety_id)
+    if data.status in ('planned','active') and not variety.active: raise HTTPException(422,'Niet-actieve soort kan niet voor een nieuwe lopende of geplande teelt worden gebruikt')
     if data.status in ('planned','active'):
         used=db.scalar(select(func.coalesce(func.sum(Cultivation.beds),0)).where(Cultivation.bay_number==data.bay_number,Cultivation.round_name==data.round_name.strip(),Cultivation.status.in_(['planned','active'])))
         if used+data.beds>6: raise HTTPException(409,'Meer dan zes bedden in deze kap en ronde')
@@ -234,7 +253,7 @@ def add_planning(id:int,data:PlanningIn,db:Session=Depends(get_db),user:User=Dep
     if previous and not (data.reason or '').strip(): raise HTTPException(422,'Reden voor wijziging is verplicht')
     values=data.model_dump()
     if previous:
-        for name in ('plant_date','light_out_date','expected_harvest_date','density'):
+        for name in ('plant_date','light_out_date','expected_harvest_date','density','planned_stems','interlight_description','lighting_schedule','planned_lamp_hours'):
             if name not in data.model_fields_set: values[name]=getattr(previous,name)
     # Revalidate after filling omitted fields; explicit null still clears a value.
     try: values=PlanningIn.model_validate(values).model_dump()
@@ -275,13 +294,13 @@ def add_mapping(data:MappingIn,db:Session=Depends(get_db),user:User=Depends(requ
         previous=get_or_404(db,MappingVersion,data.replaces_id)
         if previous.bay_number!=data.bay_number or previous.object_type!=data.object_type or previous.valid_from>=data.valid_from or (previous.valid_until and previous.valid_until<data.valid_from): raise HTTPException(422,'Ongeldige eerdere koppeling')
         previous.valid_until=data.valid_from-timedelta(days=1)
-        db.flush()
+        db.flush(); mapping_revision(db,previous)
     for other in db.scalars(select(MappingVersion).where(MappingVersion.object_type==data.object_type)):
         overlap=(other.valid_until is None or other.valid_until>=data.valid_from) and (data.valid_until is None or other.valid_from<=data.valid_until)
         if overlap and ((other.bay_number==data.bay_number and (data.object_type!='light' or other.object_number==data.object_number)) or (data.object_type in ('valve','light') and other.object_number==data.object_number)):
             raise HTTPException(409,'Koppeling overlapt een bestaande periode; geef replaces_id op')
     values=data.model_dump(exclude={'replaces_id'})
-    m=MappingVersion(**values); db.add(m); db.flush(); audit(db,user,'create','mapping',{'id':m.id,'replaces_id':data.replaces_id}); db.commit(); return obj(m)
+    m=MappingVersion(**values); db.add(m); db.flush(); mapping_revision(db,m); audit(db,user,'create','mapping',{'id':m.id,'replaces_id':data.replaces_id}); db.commit(); return obj(m)
 @router.get('/api/users')
 def users(db:Session=Depends(get_db),user:User=Depends(require_admin)): return [public_user(x)|{'active':x.active} for x in db.scalars(select(User).order_by(User.id))]
 @router.post('/api/users')
@@ -314,11 +333,16 @@ def update_user(id:int,data:UserUpdate,db:Session=Depends(get_db),user:User=Depe
     audit(db,user,'update','user',{'id':id,'role':target.role,'active':target.active,'password_changed':data.password is not None}); db.commit()
     return public_user(target)|{'active':target.active}
 class VarietyUpdate(CoreSchema):
-    target_weight_g:float=Field(gt=0,le=1000)
+    target_weight_g:float|None=Field(default=None,gt=0,le=1000)
+    active:bool|None=None
 @router.patch('/api/varieties/{id}')
 def update_variety(id:int,data:VarietyUpdate,db:Session=Depends(get_db),user:User=Depends(require_admin)):
-    v=get_or_404(db,Variety,id); old=v.target_weight_g; v.target_weight_g=data.target_weight_g
-    audit(db,user,'update','variety',{'id':id,'old_target_weight_g':old,'target_weight_g':v.target_weight_g}); db.commit(); return obj(v)
+    v=get_or_404(db,Variety,id); old={'target_weight_g':v.target_weight_g,'active':v.active}
+    if data.target_weight_g is not None:
+        v.target_weight_g=data.target_weight_g
+        db.add(VarietyTargetVersion(variety_id=v.id,target_weight_g=v.target_weight_g,author_id=user.id))
+    if data.active is not None: v.active=data.active
+    audit(db,user,'update','variety',{'id':id,'before':old,'after':{'target_weight_g':v.target_weight_g,'active':v.active}}); db.commit(); return obj(v)
 class BayUpdate(CoreSchema):
     area_m2:float|None=Field(default=None,gt=0)
 @router.patch('/api/bays/{number}')
@@ -351,3 +375,8 @@ def update_cultivation(id:int,data:CultivationUpdate,db:Session=Depends(get_db),
     cultivation_revision(db,c)
     audit(db,user,'update','cultivation',{'id':id,'before':before,'after':{'category':c.category,'status':c.status,'label_quality':c.label_quality}})
     db.commit(); return obj(c)
+
+@router.get('/api/varieties/{id}/targets')
+def variety_target_history(id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    get_or_404(db,Variety,id)
+    return [obj(v) for v in db.scalars(select(VarietyTargetVersion).where(VarietyTargetVersion.variety_id==id).order_by(VarietyTargetVersion.created_at.desc(),VarietyTargetVersion.id.desc()))]

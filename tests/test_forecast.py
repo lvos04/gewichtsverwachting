@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import Bay, Cultivation, CultivationRevision, Harvest, Measurement, PlanningVersion, Stem, User, Variety
+from app.models import Bay, Cultivation, CultivationRevision, Harvest, Measurement, PlanningVersion, Stem, User, Variety, VarietyTargetVersion
 from app.calculations import (alar_summary, astronomical_daylength, growth_g_per_kd_day,
                               kd_day, lamp_dli, natural_dli, phase_for_day, season_context)
 from app import forecast as fc
@@ -21,6 +21,8 @@ def db():
         session.add_all([User(id=1, username="admin", password_hash="x", role="admin"),
                          Bay(number=1, department=1, beds=6),
                          Variety(id=1, name="antonov", target_weight_g=105)])
+        session.flush()
+        session.add(VarietyTargetVersion(variety_id=1, target_weight_g=105, created_at=datetime(2010, 1, 1), author_id=1))
         session.commit()
         yield session
 
