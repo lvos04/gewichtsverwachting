@@ -1,5 +1,41 @@
 # Wijzigingen
 
+## 0.4.0 — Priva Bridge als bron (november 2026)
+
+De gewichtsapp kan klimaat- en lichtdata uit de lokale **Priva Bridge** halen (implementatieplan v1.1, sectie 2 en
+8). Alles staat achter één schakelaar in **Beheer**; standaard uit, en dan verandert er niets. Details:
+[Priva Bridge](PRIVA_BRIDGE.md).
+
+### Nieuwe instellingen
+
+| Instelling (Beheer) | Sleutel | Standaard | Toelichting |
+|---|---|---|---|
+| Klimaat- en lichtdata uit Priva Bridge | `bridge_enabled` | **uit** | Uit = alleen de eigen CSV-import, zoals in 0.3. |
+| Bridge-URL | `bridge_url` | leeg | Alleen intern netwerk (privé-IP of interne naam; ook bij elk verzoek gecontroleerd). |
+| Eigen CA-certificaat | `bridge_ca_pem` | leeg | Optioneel voor https met een eigen CA. |
+| Voorrang bij overlap | `bridge_voorrang` | `bridge_ok_verdacht` | Bridge wint alleen bij kwaliteit ok/verdacht; anders de eigen import. Ook: `bridge_alleen_ok`, `eigen_import_eerst`. |
+| Dagelijks ophalen vanaf (uur) | `bridge_sync_hour` | 6 | Nederlandse tijd. |
+| Dagen terug bij dagelijks ophalen | `bridge_sync_days` | 14 | Haalt ook revisies van afgelopen dagen op. |
+| API-token | apart, versleuteld | geen | Nooit teruggetoond; sleutel uit `BRIDGE_TOKEN_KEY` of `/data/secrets` (niet in back-ups). |
+
+### Functies
+* Server-side ophalen van `/api/v1/status`, `/api/v1/metrics` en `/api/v1/daily` (scopes `kap:1–40` en
+  `afdeling:1–4`, `inherit=true`, cursor-paginering) met Bearer-token (`read:data`); dagelijks in de bestaande
+  achtergrondtaak en handmatig met **Nu ophalen** (ook een zelfgekozen historische periode); **Verbinding testen**.
+* Append-only cache `bridge_daily_values` met herkomst (synchronisatie, `import_id`, revisie, kwaliteit, dekking,
+  `resolved_from`, bronnen); berekeningen op een peildatum gebruiken alleen wat toen al was opgehaald.
+* Klimaatpagina en per-fase omgevingskenmerken (lichtsom lampen, etmaaltemperatuur, RV) gebruiken Bridge-dagen
+  volgens de ingestelde voorrang en vallen per dag terug op de eigen import. `ontbreekt`/`onvolledig` telt nooit als 0.
+* Bron per dag en actualiteit (“laatste complete dag”) zichtbaar op de klimaatpagina, in het teeltdetail en in Beheer.
+* 401, 403, 404, 429 (`Retry-After`), timeouts, omleidingen en `problem+json` geven duidelijke meldingen zonder de
+  cache aan te tasten.
+
+### Techniek
+* Schema 0006: tabellen `bridge_syncs`, `bridge_daily_values`, `bridge_credentials` (alleen toevoegingen).
+* `httpx` is nu een productieafhankelijkheid (was alleen voor tests).
+* De map `secrets/` in de datamap gaat niet mee in back-ups.
+* Service-workercache `v4` (nieuw script `app/static/bridge.js`).
+
 ## 0.3.0 — verbeterplan (november 2026)
 
 Alles wat het gedrag voor gebruikers of beheerders verandert, staat achter een instelling in **Beheer**. De

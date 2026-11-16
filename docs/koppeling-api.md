@@ -76,7 +76,7 @@ python -m app.koppeling_cli intrekken 3
 ### `GET /api/koppeling/v1/info`
 
 ```json
-{"app": "gewichtsverwachting", "naam": "Gewichtsverwachting chrysant", "versie": "0.3.0", "api_versie": "1",
+{"app": "gewichtsverwachting", "naam": "Gewichtsverwachting chrysant", "versie": "0.4.0", "api_versie": "1",
  "bedrijf": null, "datasets": ["samenvatting", "teelten", "oogstplanning", "metingen", "prognoses", "oogsten"],
  "tijd": "2026-11-16T15:00:00Z"}
 ```
