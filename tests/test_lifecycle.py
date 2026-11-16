@@ -6,8 +6,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Zelfde standaard-Origin als in tests/conftest.py (strikte oorsprongcontrole).
+BROWSER_ORIGIN = "exec(open('tests/conftest.py').read())\n"
+
 def run_python(code, data_dir):
-    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT,
+    result = subprocess.run([sys.executable, '-c', BROWSER_ORIGIN + code], cwd=ROOT,
                             env={**os.environ, 'DATA_DIR': str(data_dir), 'DATABASE_URL': f'sqlite:///{data_dir}/app.db'},
                             capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr

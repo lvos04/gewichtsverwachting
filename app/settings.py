@@ -4,7 +4,7 @@ import os
 from typing import Literal
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, ForeignKey, JSON, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from .db import Base, get_db
@@ -21,6 +21,19 @@ class AppSettings(BaseModel):
     session_hours: int = Field(default=12, ge=1, le=168)
     login_max_attempts: int = Field(default=5, ge=3, le=50)
     login_window_minutes: int = Field(default=15, ge=1, le=1440)
+    # Ruimer dan per account: achter een gedeelde proxy/tunnel blokkeert één persoon
+    # niet iedereen. 0 = gelijk aan login_max_attempts (gedrag vóór 0.3).
+    login_ip_max_attempts: int = Field(default=25, ge=0, le=1000)
+    # Oplopende vertraging na mislukte pogingen (0,25 s per eerdere fout), maximaal dit aantal seconden.
+    login_delay_max_seconds: float = Field(default=1.0, ge=0, le=10)
+    # Komma-gescheiden IP's/CIDR's van reverse proxy's/tunnels waarvan X-Forwarded-For
+    # wordt vertrouwd. Leeg = omgevingsvariabele TRUSTED_PROXIES, standaard geen.
+    trusted_proxies: str = Field(default='', max_length=1000)
+    strict_origin_check: bool = True
+    mfa_required_admins: bool = False
+    koppeling_enabled: bool = False
+    # 0 = auditregels onbeperkt bewaren (standaard). Anders dagelijks ouder dan N dagen opruimen.
+    audit_keep_days: int = Field(default=0, ge=0, le=36500)
     backup_interval_hours: int = Field(default=24, ge=1, le=168)
     backup_keep_days: int = Field(default=0, ge=0, le=3650)
     ridge_alpha: float = Field(default=10.0, gt=0, le=10000)
@@ -51,6 +64,15 @@ class SettingsChange(BaseModel):
     effective_from: datetime | None = None
     reason: str = Field(min_length=3, max_length=2000)
 
+    @field_validator('settings')
+    @classmethod
+    def valid_proxies(cls, value):
+        from .auth import parse_proxies
+        parts = [p for p in value.trusted_proxies.replace(';', ',').split(',') if p.strip()]
+        if len(parse_proxies(value.trusted_proxies)) != len(parts):
+            raise ValueError('Vertrouwde proxy: gebruik IP-adressen of netwerken (CIDR), gescheiden door komma\'s')
+        return value
+
 def effective_settings(db: Session, as_of: datetime | None = None) -> AppSettings:
     as_of = as_of or utcnow()
     if as_of.tzinfo is not None:
@@ -80,8 +102,14 @@ def change_settings(data: SettingsChange, user: User = Depends(require_admin), d
         effective = effective.astimezone(timezone.utc).replace(tzinfo=None)
     if (now - effective).total_seconds() > 60:
         raise HTTPException(422, 'Instellingen mogen niet achteraf worden gewijzigd. Kies nu of een toekomstig moment.')
-    row = SettingsVersion(settings=data.settings.model_dump(), effective_from=effective,
-                          created_at=now, reason=data.reason.strip(), user_id=user.id)
+    if data.settings.mfa_required_admins and not user.mfa_enabled:
+        raise HTTPException(422, 'Zet eerst voor je eigen account tweestapsverificatie aan, anders sluit je jezelf buiten het beheer.')
+    return save_settings(db, user, data.settings, effective, data.reason.strip(), now)
+
+def save_settings(db: Session, user: User, values: AppSettings, effective: datetime, reason: str, now: datetime | None = None):
+    now = now or utcnow()
+    row = SettingsVersion(settings=values.model_dump(), effective_from=effective,
+                          created_at=now, reason=reason, user_id=user.id)
     db.add(row)
     db.flush()
     audit(db, user, 'settings_changed', f'settings:{row.id}', {'settings': row.settings, 'effective_from': effective.isoformat(), 'reason': row.reason})

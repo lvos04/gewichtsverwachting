@@ -176,7 +176,8 @@ def test_effective_settings_drive_login_and_measurement_tolerance(api):
     c,sessions=api
     c.post('/api/auth/setup',json={'username':'owner','password':'very long password'})
     with sessions() as db:
-        cfg=AppSettings(session_hours=2,measurement_tolerance_days=3,steering_until_kd=29,login_max_attempts=3,login_window_minutes=60)
+        # login_ip_max_attempts=0: IP-limiet gelijk aan accountlimiet (gedrag vóór 0.3).
+        cfg=AppSettings(session_hours=2,measurement_tolerance_days=3,steering_until_kd=29,login_max_attempts=3,login_window_minutes=60,login_ip_max_attempts=0,login_delay_max_seconds=0)
         db.add(SettingsVersion(settings=cfg.model_dump(),effective_from=datetime.now(timezone.utc).replace(tzinfo=None),reason='test',user_id=1))
         db.commit()
     v=c.get('/api/varieties').json()[0]['id']

@@ -12,6 +12,17 @@ class User(Base):
     role: Mapped[str]=mapped_column(String(20))
     active: Mapped[bool]=mapped_column(Boolean, default=True)
     created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow)
+    # Optionele TOTP-tweestapsverificatie (per gebruiker, standaard uit).
+    mfa_secret: Mapped[str|None]=mapped_column(String(64), nullable=True)
+    mfa_enabled: Mapped[bool]=mapped_column(Boolean, default=False, server_default='0')
+    mfa_last_step: Mapped[int|None]=mapped_column(Integer, nullable=True)
+class MfaChallenge(Base):
+    """Kortlevende stap tussen wachtwoord en verificatiecode; alleen de hash wordt bewaard."""
+    __tablename__='mfa_challenges'
+    token_hash: Mapped[str]=mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int]=mapped_column(ForeignKey('users.id'))
+    expires_at: Mapped[datetime]=mapped_column(DateTime, index=True)
+    attempts: Mapped[int]=mapped_column(Integer, default=0)
 class AuthSession(Base):
     __tablename__='auth_sessions'
     token_hash: Mapped[str]=mapped_column(String(64), primary_key=True)
@@ -108,6 +119,10 @@ class Harvest(Base):
     quality_classes: Mapped[object|None]=mapped_column(JSON, nullable=True)
     notes: Mapped[str|None]=mapped_column(Text, nullable=True)
     created_at: Mapped[datetime]=mapped_column(DateTime, default=utcnow)
+    # Correcties zijn nieuwe rijen (append-only) met reden; de nieuwste rij per teelt telt.
+    supersedes_id: Mapped[int|None]=mapped_column(ForeignKey('harvests.id'), nullable=True)
+    reason: Mapped[str|None]=mapped_column(Text, nullable=True)
+    author_id: Mapped[int|None]=mapped_column(ForeignKey('users.id'), nullable=True)
 class Event(Base):
     __tablename__='events'
     id: Mapped[int]=mapped_column(primary_key=True)
