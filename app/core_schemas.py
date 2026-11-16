@@ -132,6 +132,25 @@ class HarvestIn(CoreSchema):
         return self
 
 
+class HarvestCorrection(CoreSchema):
+    """Alleen opgegeven velden wijzigen; reden is verplicht."""
+
+    start_date: date | None = None
+    end_date: date | None = None
+    weight_g: float | None = Field(default=None, gt=0, le=2000)
+    stem_count: int | None = Field(default=None, ge=0)
+    loss_fraction: float | None = Field(default=None, ge=0, le=1)
+    quality_classes: list[dict] | None = None
+    notes: str | None = None
+    reason: str = Field(min_length=3, max_length=2000)
+
+    @model_validator(mode="after")
+    def reason_required(self):
+        if not self.reason.strip():
+            raise ValueError("Reden voor correctie is verplicht")
+        return self
+
+
 class EventIn(CoreSchema):
     occurred_at: datetime
     kind: str = Field(min_length=1, max_length=100)
@@ -187,6 +206,7 @@ class UserUpdate(CoreSchema):
     role: str | None = None
     active: bool | None = None
     password: str | None = Field(default=None, min_length=12, max_length=256)
+    mfa_reset: bool = False
 
     @model_validator(mode="after")
     def valid(self):

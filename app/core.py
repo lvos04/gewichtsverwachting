@@ -1,6 +1,6 @@
 import hashlib, json, statistics
 from datetime import date, datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
@@ -10,7 +10,7 @@ from .models import User, Variety, VarietyTargetVersion, Bay, Cultivation, Culti
 from .auth import require_user, require_write, require_admin, audit, hash_password, public_user
 # Invoerschema's staan in core_schemas; hier opnieuw beschikbaar voor bestaande imports.
 from .core_schemas import (NL, contains_nonfinite, CoreSchema, VarietyIn, CultivationIn, PlanningIn, StemIn,  # noqa: F401
-                           MeasurementIn, HarvestIn, EventIn, MappingIn, UserIn, UserUpdate, VarietyUpdate,
+                           MeasurementIn, HarvestIn, HarvestCorrection, EventIn, MappingIn, UserIn, UserUpdate, VarietyUpdate,
                            BayUpdate, CultivationUpdate)
 router=APIRouter()
 def to_utc(d):
@@ -50,41 +50,54 @@ def seed_data(db):
 @router.get('/api/dashboard')
 def dashboard(db:Session=Depends(get_db), user:User=Depends(require_user)):
     return dashboard_data(db)
+def latest_plans(db:Session, cultivation_ids=None)->dict:
+    """Nieuwste planningsversie per teelt, in SQL bepaald (created_at, id aflopend)."""
+    ranked=select(PlanningVersion.id,func.row_number().over(partition_by=PlanningVersion.cultivation_id,
+        order_by=(PlanningVersion.created_at.desc(),PlanningVersion.id.desc())).label('rank'))
+    if cultivation_ids is not None:
+        if not cultivation_ids: return {}
+        ranked=ranked.where(PlanningVersion.cultivation_id.in_(cultivation_ids))
+    ranked=ranked.subquery()
+    return {p.cultivation_id:p for p in db.scalars(select(PlanningVersion).join(ranked,ranked.c.id==PlanningVersion.id).where(ranked.c.rank==1))}
+def _local_day_start_utc(day):
+    return datetime.combine(day,datetime.min.time(),NL).astimezone(timezone.utc).replace(tzinfo=None)
 def dashboard_data(db:Session):
-    """Shared by the web dashboard and the read-only company link API."""
+    """Shared by the web dashboard and the read-only company link API.
+
+    Filteren en tellen gebeurt in SQL; alleen open teelten en hun samenvattingen
+    worden geladen in plaats van alle metingen en planningsversies.
+    """
     from .settings import effective_settings
     settings=effective_settings(db)
-    cs=db.scalars(select(Cultivation)).all()
-    active=[c for c in cs if c.status in ('active','planned')]
-    plans=db.scalars(select(PlanningVersion).order_by(PlanningVersion.created_at.desc(),PlanningVersion.id.desc())).all()
-    latest={}
-    for p in plans: latest.setdefault(p.cultivation_id,p)
-    measurements=db.scalars(select(Measurement).order_by(Measurement.measured_at.desc())).all()
-    by_cultivation={}
-    for m in measurements: by_cultivation.setdefault(m.cultivation_id,[]).append(m)
+    active=db.scalars(select(Cultivation).where(Cultivation.status.in_(['active','planned']))).all()
+    ids=[c.id for c in active]
+    latest=latest_plans(db,ids)
+    measurement_count=db.scalar(select(func.count()).select_from(Measurement))
+    kinds_by_cultivation={}; last_pilot={}
+    if ids:
+        for cid,kind,last in db.execute(select(Measurement.cultivation_id,Measurement.kind,func.max(Measurement.measured_at)).where(Measurement.cultivation_id.in_(ids)).group_by(Measurement.cultivation_id,Measurement.kind)):
+            kinds_by_cultivation.setdefault(cid,set()).add(kind)
+            if kind=='pilot': last_pilot[cid]=last
     varieties={v.id:v.name for v in db.scalars(select(Variety))}
     today=datetime.now(NL).date()
     week_start=today-timedelta(days=today.weekday())
-    measured_species=set()
-    for c in active:
-        if any(m.kind=='KD10' and week_start<=m.measured_at.replace(tzinfo=timezone.utc).astimezone(NL).date()<=today for m in by_cultivation.get(c.id,[])):
-            measured_species.add(c.variety_id)
+    measured_species=set(db.scalars(select(Cultivation.variety_id).distinct().join(Measurement,Measurement.cultivation_id==Cultivation.id).where(
+        Cultivation.status.in_(['active','planned']),Measurement.kind=='KD10',
+        Measurement.measured_at>=_local_day_start_utc(week_start),Measurement.measured_at<_local_day_start_utc(today+timedelta(days=1))))) if ids else set()
     candidates=[]
     for c in active:
         plan=latest.get(c.id)
         if not plan or not plan.light_out_date: continue
         kd=(today-plan.light_out_date).days
-        items=by_cultivation.get(c.id,[])
-        kinds={m.kind for m in items}
+        kinds=kinds_by_cultivation.get(c.id,set())
         def task(kind, target_day, due):
             return {'cultivation_id':c.id,'bay_number':c.bay_number,'round_name':c.round_name,'variety_id':c.variety_id,'variety':varieties.get(c.variety_id),'kind':kind,'due_date':due.isoformat(),'actual_kd_day':kd,'days_until':(due-today).days,'status':'overdue' if due<today else 'due' if due==today else 'upcoming','steering_until_kd':settings.steering_until_kd,'steering_window_open':0<=kd<=settings.steering_until_kd}
         if 'KD10' not in kinds and c.variety_id not in measured_species and kd>=3:
             candidates.append(task('KD10',10,plan.light_out_date+timedelta(days=10)))
         if 'KD10' in kinds and 'KD30' not in kinds and kd>=23:
             candidates.append(task('KD30',30,plan.light_out_date+timedelta(days=30)))
-        pilots=[m for m in items if m.kind=='pilot']
-        if pilots and kd>=7:
-            due=pilots[0].measured_at.replace(tzinfo=timezone.utc).astimezone(NL).date()+timedelta(days=7)
+        if c.id in last_pilot and kd>=7:
+            due=last_pilot[c.id].replace(tzinfo=timezone.utc).astimezone(NL).date()+timedelta(days=7)
             if due<=today+timedelta(days=7): candidates.append(task('pilot',None,due))
     candidates.sort(key=lambda x:(x['days_until'],x['bay_number']))
     # KD10 is a suggestion for one new bay per variety in the current week.
@@ -94,7 +107,7 @@ def dashboard_data(db:Session):
             if item['variety_id'] in species_seen: continue
             species_seen.add(item['variety_id'])
         selected.append(item)
-    return {'active_cultivations':len(active),'rounds':sorted({c.round_name for c in active}),'bays':40,'measurements':len(measurements),'steering_until_kd':settings.steering_until_kd,'tasks':selected}
+    return {'active_cultivations':len(active),'rounds':sorted({c.round_name for c in active}),'bays':40,'measurements':measurement_count,'steering_until_kd':settings.steering_until_kd,'tasks':selected}
 @router.get('/api/bays')
 def bays(db:Session=Depends(get_db),user:User=Depends(require_user)):
     cs=db.scalars(select(Cultivation)).all()
@@ -122,19 +135,29 @@ def add_cultivation(data:CultivationIn,db:Session=Depends(get_db),user:User=Depe
         used=db.scalar(select(func.coalesce(func.sum(Cultivation.beds),0)).where(Cultivation.bay_number==data.bay_number,Cultivation.round_name==data.round_name.strip(),Cultivation.status.in_(['planned','active'])))
         if used+data.beds>6: raise HTTPException(409,'Meer dan zes bedden in deze kap en ronde')
     c=Cultivation(**{**data.model_dump(),'round_name':data.round_name.strip()}); db.add(c); db.flush(); cultivation_revision(db,c); audit(db,user,'create','cultivation',{'id':c.id}); db.commit(); return obj(c)
-def measurement_obj(db,m):
-    stems=db.scalars(select(Stem).where(Stem.measurement_id==m.id).order_by(Stem.id)).all()
-    included=[s for s in stems if not s.excluded]
-    plan=db.scalar(select(PlanningVersion).where(PlanningVersion.cultivation_id==m.cultivation_id).order_by(PlanningVersion.created_at.desc(),PlanningVersion.id.desc()))
-    kd=(m.measured_at.replace(tzinfo=timezone.utc).astimezone(NL).date()-plan.light_out_date).days if plan and plan.light_out_date else None
+def measurement_objs(db,measurements):
+    """Meetrijen met takken en KD-dag in een vast aantal queries (geen N+1)."""
+    if not measurements: return []
     from .settings import effective_settings
     tolerance=effective_settings(db).measurement_tolerance_days
-    return {**obj(m),'actual_kd_day':kd,'stems':[obj(s) for s in stems],'mean_weight_g':statistics.mean(s.weight_g for s in included) if included else None,'mean_length_cm':statistics.mean(s.length_cm for s in included) if included else None,'weight_sd_g':statistics.stdev(s.weight_g for s in included) if len(included)>1 else None,'timing_warning':kd is not None and m.kind in ('KD10','KD30') and abs(kd-int(m.kind[2:]))>tolerance,'timing_tolerance_days':tolerance}
+    stems={}
+    for s in db.scalars(select(Stem).where(Stem.measurement_id.in_([m.id for m in measurements])).order_by(Stem.id)):
+        stems.setdefault(s.measurement_id,[]).append(s)
+    plans=latest_plans(db,list({m.cultivation_id for m in measurements}))
+    out=[]
+    for m in measurements:
+        rows=stems.get(m.id,[]); included=[s for s in rows if not s.excluded]
+        plan=plans.get(m.cultivation_id)
+        kd=(m.measured_at.replace(tzinfo=timezone.utc).astimezone(NL).date()-plan.light_out_date).days if plan and plan.light_out_date else None
+        out.append({**obj(m),'actual_kd_day':kd,'stems':[obj(s) for s in rows],'mean_weight_g':statistics.mean(s.weight_g for s in included) if included else None,'mean_length_cm':statistics.mean(s.length_cm for s in included) if included else None,'weight_sd_g':statistics.stdev(s.weight_g for s in included) if len(included)>1 else None,'timing_warning':kd is not None and m.kind in ('KD10','KD30') and abs(kd-int(m.kind[2:]))>tolerance,'timing_tolerance_days':tolerance})
+    return out
+def measurement_obj(db,m):
+    return measurement_objs(db,[m])[0]
 @router.get('/api/cultivations/{id}')
 def cultivation_detail(id:int,db:Session=Depends(get_db),user:User=Depends(require_user)):
     c=get_or_404(db,Cultivation,id)
     def rows(cls): return db.scalars(select(cls).where(cls.cultivation_id==id).order_by(cls.id)).all()
-    return {**obj(c),'planning':[obj(x) for x in rows(PlanningVersion)],'revisions':[obj(x) for x in rows(CultivationRevision)],'measurements':[measurement_obj(db,x) for x in rows(Measurement)],'harvests':[obj(x) for x in rows(Harvest)],'events':[obj(x) for x in rows(Event)]}
+    return {**obj(c),'planning':[obj(x) for x in rows(PlanningVersion)],'revisions':[obj(x) for x in rows(CultivationRevision)],'measurements':measurement_objs(db,rows(Measurement)),'harvests':[obj(x) for x in rows(Harvest)],'events':[obj(x) for x in rows(Event)]}
 @router.post('/api/cultivations/{id}/planning')
 def add_planning(id:int,data:PlanningIn,db:Session=Depends(get_db),user:User=Depends(require_write)):
     get_or_404(db,Cultivation,id)
@@ -167,9 +190,34 @@ def add_measurement(data:MeasurementIn,db:Session=Depends(get_db),user:User=Depe
         if existing and existing.payload_hash==digest: return measurement_obj(db,existing)
         raise HTTPException(409,'Meet-ID bestaat met andere gegevens')
     return measurement_obj(db,m)
+HARVEST_FIELDS=('start_date','end_date','weight_g','stem_count','loss_fraction','quality_classes','notes')
 @router.post('/api/cultivations/{id}/harvest')
 def add_harvest(id:int,data:HarvestIn,db:Session=Depends(get_db),user:User=Depends(require_write)):
-    c=get_or_404(db,Cultivation,id); h=Harvest(cultivation_id=id,**data.model_dump()); db.add(h); c.status='harvested'; db.flush(); cultivation_revision(db,c); audit(db,user,'create','harvest',{'id':h.id,'cultivation_id':id}); db.commit(); return obj(h)
+    c=get_or_404(db,Cultivation,id); h=Harvest(cultivation_id=id,author_id=user.id,**data.model_dump()); db.add(h); c.status='harvested'; db.flush(); cultivation_revision(db,c); audit(db,user,'create','harvest',{'id':h.id,'cultivation_id':id}); db.commit(); return obj(h)
+@router.post('/api/cultivations/{id}/harvest/{harvest_id}/correction')
+def correct_harvest(id:int,harvest_id:int,data:HarvestCorrection,db:Session=Depends(get_db),user:User=Depends(require_write)):
+    """Correctie als nieuwe, gekoppelde rij met verplichte reden (zoals bij planning).
+
+    De oorspronkelijke registratie blijft bewaard; prognoses en baselines gebruiken
+    vanaf het correctiemoment de nieuwste rij per teelt.
+    """
+    get_or_404(db,Cultivation,id)
+    if db.bind.dialect.name=='sqlite': db.connection().exec_driver_sql('BEGIN IMMEDIATE')
+    previous=db.get(Harvest,harvest_id)
+    if previous is None or previous.cultivation_id!=id: raise HTTPException(404,'Oogstregistratie niet gevonden')
+    latest=db.scalar(select(Harvest).where(Harvest.cultivation_id==id).order_by(Harvest.created_at.desc(),Harvest.id.desc()))
+    if latest.id!=previous.id: raise HTTPException(409,'Corrigeer de meest recente oogstregistratie van deze teelt')
+    values={name:getattr(previous,name) for name in HARVEST_FIELDS}
+    for name in HARVEST_FIELDS:
+        if name in data.model_fields_set: values[name]=getattr(data,name)
+    try: values=HarvestIn.model_validate(values).model_dump()
+    except (ValidationError,HTTPException): raise HTTPException(422,'Ongeldige gecorrigeerde oogstgegevens')
+    before={name:getattr(previous,name) for name in HARVEST_FIELDS}
+    if values==before: raise HTTPException(422,'Er is niets gewijzigd')
+    h=Harvest(cultivation_id=id,supersedes_id=previous.id,reason=data.reason.strip(),author_id=user.id,**values); db.add(h); db.flush()
+    changed={k:{'voor':before[k],'na':values[k]} for k in HARVEST_FIELDS if before[k]!=values[k]}
+    audit(db,user,'correct','harvest',{'id':h.id,'cultivation_id':id,'supersedes_id':previous.id,'reason':h.reason,'changes':json.loads(json.dumps(changed,default=str))})
+    db.commit(); return obj(h)
 @router.post('/api/cultivations/{id}/events')
 def add_event(id:int,data:EventIn,db:Session=Depends(get_db),user:User=Depends(require_write)):
     get_or_404(db,Cultivation,id); e=Event(cultivation_id=id,**{**data.model_dump(),'occurred_at':to_utc(data.occurred_at)}); db.add(e); db.flush(); audit(db,user,'create','event',{'id':e.id,'cultivation_id':id}); db.commit(); return obj(e)
@@ -197,7 +245,11 @@ def add_user(data:UserIn,db:Session=Depends(get_db),user:User=Depends(require_ad
     if db.scalar(select(User).where(func.lower(User.username)==data.username.strip().lower())): raise HTTPException(409,'Gebruiker bestaat al')
     u=User(username=data.username.strip(),password_hash=hash_password(data.password),role=data.role); db.add(u); db.flush(); audit(db,user,'create','user',{'id':u.id,'role':u.role}); db.commit(); return public_user(u)
 @router.get('/api/audit')
-def audits(db:Session=Depends(get_db),user:User=Depends(require_admin)): return [obj(x) for x in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(1000))]
+def audits(before_id:int|None=Query(None,ge=1),limit:int=Query(1000,ge=1,le=1000),db:Session=Depends(get_db),user:User=Depends(require_admin)):
+    # Paginering: standaard de nieuwste 1000 (ongewijzigd); daarna met before_id verder terug.
+    query=select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)
+    if before_id is not None: query=query.where(AuditLog.id<before_id)
+    return [obj(x) for x in db.scalars(query)]
 @router.patch('/api/users/{id}')
 def update_user(id:int,data:UserUpdate,db:Session=Depends(get_db),user:User=Depends(require_admin)):
     target=get_or_404(db,User,id)
@@ -207,11 +259,14 @@ def update_user(id:int,data:UserUpdate,db:Session=Depends(get_db),user:User=Depe
     if data.role is not None: target.role=data.role
     if data.active is not None: target.active=data.active
     if data.password is not None: target.password_hash=hash_password(data.password)
+    if data.mfa_reset and target.mfa_enabled:
+        from .mfa import reset_mfa
+        reset_mfa(db,target,user)
     if data.active is False or data.password is not None:
         from sqlalchemy import delete
         from .models import AuthSession
         db.execute(delete(AuthSession).where(AuthSession.user_id==id))
-    audit(db,user,'update','user',{'id':id,'role':target.role,'active':target.active,'password_changed':data.password is not None}); db.commit()
+    audit(db,user,'update','user',{'id':id,'role':target.role,'active':target.active,'password_changed':data.password is not None,'mfa_reset':data.mfa_reset}); db.commit()
     return public_user(target)|{'active':target.active}
 @router.patch('/api/varieties/{id}')
 def update_variety(id:int,data:VarietyUpdate,db:Session=Depends(get_db),user:User=Depends(require_admin)):

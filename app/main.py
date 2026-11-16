@@ -12,13 +12,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import inspect, text, select, func
+from sqlalchemy import inspect, text
 
-from . import __version__, auth, core, koppeling, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
+from . import __version__, auth, core, koppeling, mfa, onderhoud, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
 from .backups import create_backup
 from .db import DATA_DIR, SessionLocal, engine
-from .models import (Cultivation, CultivationRevision, Measurement, PlanningVersion, Event,
-                     Harvest, MappingRevision, VarietyTargetVersion, CropProfileVersion)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / 'static'
@@ -38,39 +36,8 @@ def migrate():
             create_backup()
         command.upgrade(config, 'head')
 
-def refresh_due_forecasts():
-    """Refresh derived snapshots daily and when a registered fact changes."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    with SessionLocal() as db:
-        # Imported observations, changed calibrations, model switches and target
-        # edits affect existing crops too. Include scheduled settings when they
-        # take effect, while ignoring future-recorded facts.
-        global_times = []
-        for column in (importer.PrivaSource.activated_at, importer.PrivaSource.revoked_at,
-                       importer.Calibration.created_at, MappingRevision.created_at,
-                       VarietyTargetVersion.created_at, CropProfileVersion.created_at,
-                       CultivationRevision.created_at, forecast.ModelArtifact.created_at,
-                       forecast.ModelActivation.created_at, Harvest.created_at,
-                       legacy_lighting.LegacyLightingJob.activated_at, legacy_lighting.LegacyLightingJob.revoked_at):
-            value = db.scalar(select(func.max(column)).where(column <= now))
-            if value is not None:
-                global_times.append(value)
-        for column in (settings.SettingsVersion.created_at, settings.SettingsVersion.effective_from):
-            value = db.scalar(select(func.max(column)).where(settings.SettingsVersion.created_at <= now,
-                                                          settings.SettingsVersion.effective_from <= now))
-            if value is not None:
-                global_times.append(value)
-        global_change = max(global_times, default=None)
-        cultivations = db.scalars(select(Cultivation).where(Cultivation.status.in_(['active', 'planned']),
-            Cultivation.id.in_(select(CultivationRevision.cultivation_id).where(CultivationRevision.created_at <= now)))).all()
-        for cultivation in cultivations:
-            last = db.scalar(select(func.max(forecast.ForecastSnapshot.created_at)).where(forecast.ForecastSnapshot.cultivation_id == cultivation.id))
-            changed = [db.scalar(select(func.max(table.created_at)).where(table.cultivation_id == cultivation.id))
-                       for table in (Measurement, PlanningVersion, Event)]
-            fresh_fact = max((value for value in [*changed, global_change] if value is not None), default=None)
-            if (last is None or (now - last).total_seconds() >= 86400 or
-                    forecast.local_date(last) < forecast.local_date(now) or (fresh_fact and fresh_fact > last)):
-                forecast.forecast(db, cultivation.id, now)
+# Herberekening en opschoning staan in app/onderhoud.py; naam blijft hier beschikbaar.
+refresh_due_forecasts = onderhoud.refresh_due_forecasts
 
 async def daily_backups():
     while True:
@@ -79,18 +46,17 @@ async def daily_backups():
             await asyncio.to_thread(refresh_due_forecasts)
         except Exception:
             log.exception('Automatische prognoseberekening mislukt')
+        try:
+            await asyncio.to_thread(onderhoud.daily_cleanup)
+        except Exception:
+            log.exception('Dagelijkse opschoning mislukt')
         with SessionLocal() as db:
             config = settings.effective_settings(db)
         latest = max((p.stat().st_mtime for p in (DATA_DIR / 'backups').glob('*.zip')), default=0)
         if datetime.now(timezone.utc).timestamp() - latest > config.backup_interval_hours * 3600:
             try:
                 await asyncio.to_thread(create_backup)
-                if config.backup_keep_days:
-                    cutoff = datetime.now(timezone.utc).timestamp() - config.backup_keep_days * 86400
-                    archives = sorted((DATA_DIR / 'backups').glob('*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
-                    for old in archives[1:]:
-                        if old.stat().st_mtime < cutoff:
-                            old.unlink()
+                onderhoud.prune_backups(config.backup_keep_days)
             except Exception:
                 log.exception('Automatische lokale back-up mislukt')
 
@@ -139,6 +105,8 @@ async def headers(request, call_next):
     return response
 
 app.include_router(auth.router)
+app.include_router(mfa.router)
+app.include_router(onderhoud.router)
 app.include_router(core.router)
 app.include_router(importer.router)
 app.include_router(forecast.router)
