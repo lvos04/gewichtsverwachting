@@ -22,6 +22,20 @@ gevalideerd model. De koppeling volgt dat strikt:
 * Gemeten takgewichten (KD-metingen) en geregistreerde oogstgewichten zijn waarnemingen en worden wel gedeeld,
   duidelijk als meting/oogst benoemd.
 
+## In- en uitschakelen (standaard uit)
+
+De koppeling staat na installatie of upgrade **uit**. Een beheerder zet hem aan met de schakelaar
+**Beheer → Bedrijfskoppeling (alleen-lezen API) → Bedrijfskoppeling ingeschakeld**. De keuze wordt als nieuwe,
+geauditeerde instellingenversie bewaard (`koppeling_enabled`, auditactie `settings_changed`).
+
+* Uit → **alle** routes onder `/api/koppeling/v1/*` geven `403 {"fout": "koppeling_uitgeschakeld"}`, ook met een
+  geldige sleutel (en ook zonder sleutel). Sleutelbeheer blijft beschikbaar, zodat sleutels alvast kunnen worden
+  aangemaakt of ingetrokken.
+* Aan → het gedrag hieronder.
+
+Beheer-API (sessie-auth, alleen beheerders): `GET /api/koppeling/status` → `{"ingeschakeld": false}`,
+`PUT /api/koppeling/status` met `{"ingeschakeld": true}`.
+
 ## Authenticatie: koppelsleutels
 
 * Header `Authorization: Bearer <sleutel>`. Zonder sleutel, met een onbekende of ingetrokken sleutel:
@@ -62,7 +76,7 @@ python -m app.koppeling_cli intrekken 3
 ### `GET /api/koppeling/v1/info`
 
 ```json
-{"app": "gewichtsverwachting", "naam": "Gewichtsverwachting chrysant", "versie": "0.2.1", "api_versie": "1",
+{"app": "gewichtsverwachting", "naam": "Gewichtsverwachting chrysant", "versie": "0.3.0", "api_versie": "1",
  "bedrijf": null, "datasets": ["samenvatting", "teelten", "oogstplanning", "metingen", "prognoses", "oogsten"],
  "tijd": "2026-11-16T15:00:00Z"}
 ```

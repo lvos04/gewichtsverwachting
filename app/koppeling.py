@@ -107,7 +107,16 @@ def _binnen_limiet(sleutel_id: int) -> bool:
         return True
 
 
+def koppeling_ingeschakeld(db: Session) -> bool:
+    from .settings import effective_settings
+    return effective_settings(db).koppeling_enabled
+
+
 def vereis_koppelsleutel(request: Request, db: Session = Depends(get_db)) -> Koppelsleutel:
+    # Instelling "Bedrijfskoppeling ingeschakeld" (standaard uit): dan weigert elke route,
+    # ook met een geldige sleutel.
+    if not koppeling_ingeschakeld(db):
+        raise KoppelingFout(403, 'koppeling_uitgeschakeld')
     header = request.headers.get('authorization', '')
     schema, _, sleutel = header.partition(' ')
     sleutel = sleutel.strip()
@@ -540,3 +549,23 @@ def aanmaken(data: SleutelIn, db: Session = Depends(get_db), user: User = Depend
 @beheer.delete('/api/koppelsleutels/{sleutel_id}')
 def intrekken(sleutel_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     return sleutel_dict(db, trek_in(db, sleutel_id, user))
+
+
+class KoppelingStatusIn(BaseModel):
+    ingeschakeld: bool
+
+
+@beheer.get('/api/koppeling/status')
+def koppeling_status(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    return {'ingeschakeld': koppeling_ingeschakeld(db)}
+
+
+@beheer.put('/api/koppeling/status')
+def koppeling_status_wijzigen(data: KoppelingStatusIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    """Schakelaar in Beheer; wordt als nieuwe, geauditeerde instellingenversie bewaard."""
+    from .settings import effective_settings, save_settings
+    huidig = effective_settings(db)
+    if huidig.koppeling_enabled != data.ingeschakeld:
+        save_settings(db, user, huidig.model_copy(update={'koppeling_enabled': data.ingeschakeld}), nu(),
+                      'Bedrijfskoppeling ' + ('ingeschakeld' if data.ingeschakeld else 'uitgeschakeld') + ' via Beheer')
+    return {'ingeschakeld': data.ingeschakeld}

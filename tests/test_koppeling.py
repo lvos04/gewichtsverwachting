@@ -36,6 +36,7 @@ def api(tmp_path):
     koppeling._verzoeken.clear()
     with TestClient(app) as client:
         assert client.post('/api/auth/setup', json=ADMIN).status_code == 200
+        assert client.put('/api/koppeling/status', json={'ingeschakeld': True}).json() == {'ingeschakeld': True}
         yield client, sessions
     engine.dispose()
 
@@ -236,3 +237,41 @@ def test_rate_limit_per_sleutel(api, monkeypatch):
     assert remote.get('/api/koppeling/v1/info', headers=bearer(sleutel)).json() == {'fout': 'te_veel_verzoeken'}
     andere = nieuwe_sleutel(client, 'Andere app')['sleutel']
     assert remote.get('/api/koppeling/v1/info', headers=bearer(andere)).status_code == 200
+
+
+def test_koppeling_standaard_uit_en_schakelbaar(api):
+    client, sessions = api
+    sleutel = nieuwe_sleutel(client)['sleutel']
+    extern = anoniem(client)
+    assert extern.get('/api/koppeling/v1/info', headers=bearer(sleutel)).status_code == 200
+    assert client.put('/api/koppeling/status', json={'ingeschakeld': False}).json() == {'ingeschakeld': False}
+    assert client.get('/api/koppeling/status').json() == {'ingeschakeld': False}
+    for pad in ('/info', '/samenvatting', '/datasets/teelten'):
+        response = extern.get('/api/koppeling/v1' + pad, headers=bearer(sleutel))
+        assert response.status_code == 403
+        assert response.json() == {'fout': 'koppeling_uitgeschakeld'}
+    # Ook zonder of met een ongeldige sleutel: uitgeschakeld.
+    assert extern.get('/api/koppeling/v1/info').json() == {'fout': 'koppeling_uitgeschakeld'}
+    # Sleutelbeheer blijft beschikbaar.
+    assert client.get('/api/koppelsleutels').status_code == 200
+    with sessions() as db:
+        acties = [a.action for a in db.scalars(select(AuditLog).where(AuditLog.action == 'settings_changed'))]
+        assert len(acties) == 2
+    assert client.put('/api/koppeling/status', json={'ingeschakeld': True}).status_code == 200
+    assert extern.get('/api/koppeling/v1/info', headers=bearer(sleutel)).status_code == 200
+
+
+def test_koppeling_uit_op_verse_installatie(tmp_path):
+    engine = create_engine(f'sqlite:///{tmp_path}/vers.db', connect_args={'check_same_thread': False})
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    app = FastAPI()
+    koppeling.install(app)
+    def override():
+        with sessions() as db:
+            yield db
+    app.dependency_overrides[get_db] = override
+    with TestClient(app) as client:
+        response = client.get('/api/koppeling/v1/info', headers=bearer('bk_' + 'x' * 43))
+        assert response.status_code == 403 and response.json() == {'fout': 'koppeling_uitgeschakeld'}
+    engine.dispose()
