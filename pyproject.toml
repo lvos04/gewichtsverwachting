@@ -1,10 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "gewichtsverwachting"
-version = "0.2.1"
+# De versie heeft één bron: app/__init__.py (__version__). API, /health,
+# koppeling en pakketmetadata lezen die waarde.
+dynamic = ["version"]
 description = "Lokale teeltregistratie en gecontroleerde gewichtsprognoses voor chrysant"
 requires-python = ">=3.12,<3.13"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.dynamic]
+version = { attr = "app.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+# Pragmatisch: alleen echte fouten (syntaxis, ongedefinieerde namen, foutieve
+# vergelijkingen). Stijlregels zouden duizenden wijzigingen in bestaande,
+# compact geschreven modules geven; nieuwe modules worden wel geformatteerd
+# (zie .github/workflows/check.yml).
+select = ["E9", "F63", "F7", "F82", "F811"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811"]

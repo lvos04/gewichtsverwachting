@@ -15,6 +15,12 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Opmaak nieuwe modules (ruff format)
+        # Bestaande compacte modules worden niet massaal herschreven; nieuwe
+        # en opgesplitste modules moeten wel ruff-format volgen.
+        run: ruff format --check app/core_schemas.py tests/test_version.py
       - run: pytest -q
       - run: python -m playwright install --with-deps chromium
       - run: python tests/browser_smoke.py
