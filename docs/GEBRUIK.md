@@ -25,3 +25,5 @@ De aangeleverde teelt-/gewicht- en teeltprogrammawerkboeken hebben een eigen rev
 **Planning en kaarten:** registreer geplande takken, tussenlicht, lichtschema en geplande branduren naast de bestaande datums en dichtheid. De kaart print deze echte afspraken en, waar bekend, de ingestelde KD10-/KD30-streeflengten en profielversie. Geplande branduren worden niet als gerealiseerde lampuren geïmporteerd.
 
 **Modelprofiel:** kies in Beheer bewust voor Basis, Licht of Klimaat, gegevensdekking en extra optionele invoer. De resultaten tonen het werkelijk gebruikte profiel en meetpeilmoment, plus ontbrekende bronnen. De actuele omgevingstabel kan recenter zijn dan de waarnemingen die het KD-model gebruikt. Dit onderscheid voorkomt dat een model voor tien dagen lamplicht plotseling met veertig dagen wordt gevoed.
+
+**Uitleg van de voorspelling:** open **Uitleg voorspelling** in het menu, of **Hoe werkt de voorspelling?** bij Prognoses. De pagina legt in gewone taal uit hoe metingen, seizoen en gecontroleerde bronnen worden gebruikt, en wat doelgewicht, modelstatus en onzekerheidsmarge betekenen. Ook beschikbaar voor lezers.

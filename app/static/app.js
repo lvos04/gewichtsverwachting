@@ -60,6 +60,7 @@ const nav = [
   ["imports", "↥", "Priva-import"],
   ["climate", "☀", "Klimaat"],
   ["models", "⌁", "Prognoses"],
+  ["model-uitleg", "?", "Uitleg voorspelling"],
   ["cards", "▤", "Teeltkaarten"],
   ["manage", "⚙", "Beheer"],
 ];
@@ -322,6 +323,7 @@ async function route() {
         imports,
         climate,
         models,
+        "model-uitleg": modelExplanation,
         cards,
         manage,
         cultivation: () => detail(id),
@@ -1111,9 +1113,9 @@ async function models() {
     pageHead(
       "Gewichtsverwachting",
       "Een eerlijke prognose begint met complete gegevens en onafhankelijke toetsing.",
-      user.role === "admin"
+      '<a class="btn" href="#model-uitleg">Hoe werkt de voorspelling?</a>' + (user.role === "admin"
         ? '<button class="primary" id="train-model">Nieuw model toetsen</button>'
-        : "",
+        : ""),
     ) +
     `<div class="notice"><strong>Vrijgave is een meetbaar besluit.</strong> Minimaal ${esc(appSettings.min_training_cultivations ?? 30)} complete standaardteelten, toetsing op ${esc(appSettings.required_unseen_rounds ?? 2)} latere volledig ongeziene rondes en verbetering tegenover dezelfde historische referentie. De genoemde 3,8 g is een doelreferentie, geen gemeten prestatie van deze app.</div><div class="two"><section class="card"><h2>Prognose per kapteelt</h2><form id="forecast-form">${selectCult()}${field("as_of", "Invoerpeildatum (optioneel)", "datetime-local")}${formError()}<button class="primary" type="submit">Verwachting bekijken</button></form><div id="forecast-result"></div></section><section class="card"><h2>Modelhistorie</h2>${rows.length ? rows.map((m) => `<article style="padding:15px 0;border-bottom:1px solid var(--line)"><h3>${esc(m.kind || m.model_kind || "Model")} #${esc(m.id)} ${tag(statusLabel(m.active ? "operational" : "experimental"), m.active ? "" : "warn")}</h3><p class="hint">${date(m.created_at)} · ${profileLabel(m.features?.spec?.profile || "basic")} · ${esc(m.data_hash || m.training_data_hash || "")}</p>${m.metrics ? modelMetrics(m.metrics) : ""}${m.release_reasons ? qualityView(m.release_reasons) : ""}<details><summary>Validatie en kenmerken</summary>${json(m)}</details>${user.role === "admin" ? `<button class="small" data-activate="${m.id}" ${m.operational_eligible !== true ? 'disabled title="Voldoet nog niet aan vrijgavecriteria"' : ""}>Operationeel activeren</button>` : ""}</article>`).join("") : empty("Nog geen getraind model", "Zonder betrouwbare oogstlabels blijft de verwachting onbekend.")}</section></div><section class="card"><div class="section-title"><h2>Handmatige toekomstscenario’s</h2><button id="new-scenario" class="small">＋ Scenario</button></div><p class="hint">Buitenweer en teeltinstellingen voor de nog onbekende periode. Handmatige invoer is geen waargenomen klimaat. Externe provider staat uit.</p>${scenarios.length ? scenarios.map((s) => `<details><summary>${esc(s.name || s.label || s.scenario || "Scenario")} · geldig ${date(s.valid_at)}</summary>${json(s)}</details>`).join("") : empty("Nog geen scenario’s", "Leg eventueel een donker, gemiddeld of licht toekomstscenario vast.")}</section><section class="card" id="control-comparison"></section>`;
   bindForm("#forecast-form", async (d) => {
@@ -1174,6 +1176,88 @@ async function models() {
   );
   $("#new-scenario").onclick = scenarioForm;
   await comparisonPanel();
+}
+function modelExplanation() {
+  $("#main").innerHTML = pageHead(
+    "Zo werkt de voorspelling",
+    "In gewone taal: van vijf gemeten takken naar een verwacht oogstgewicht.",
+    '<a class="btn" href="#models">Naar de prognoses →</a>',
+  ) + `<article class="model-guide" aria-label="Uitleg van het voorspelmodel">
+    <section class="card guide-intro">
+      <div class="eyebrow">Het idee</div>
+      <h2>Wat zouden deze takken bij de oogst kunnen wegen?</h2>
+      <p>Je meet hoe de takken er nu voor staan. De app zoekt in eerdere teelten naar verbanden tussen zulke metingen en het uiteindelijke oogstgewicht. Daarmee maakt hij een schatting van het <strong>gewicht per tak bij de oogst</strong>.</p>
+      <p>Het is een hulpmiddel voor jouw beoordeling van de teelt. Er zit geen glazen bol in de app.</p>
+    </section>
+
+    <section class="card">
+      <h2>Zo gaat het in vier stappen</h2>
+      <ol class="guide-steps">
+        <li><strong>Jij meet vijf takken.</strong><p>Je voert het gewicht en de lengte in. De app gebruikt het gemiddelde, zodat één lichte of zware tak minder invloed heeft. Meet op vaste plekken volgens dezelfde werkwijze.</p></li>
+        <li><strong>De app kijkt naar de teelt.</strong><p>Welke soort is het? Hoe dicht staan de planten? Hoeveel dagen zitten ze in de korte dag? En in welk deel van het jaar groeien ze?</p></li>
+        <li><strong>Een model gebruikt wat eerdere teelten hebben geleerd.</strong><p>Een model is hier gewoon een rekenregel die uit eerdere metingen en oogstgewichten is gemaakt. Hij berekent een verwachting voor deze teelt.</p></li>
+        <li><strong>Je krijgt een schatting met een marge.</strong><p>Je ziet een verwacht gewicht, de onzekerheid en welke gegevens zijn gebruikt. Als bruikbare gegevens ontbreken, kan de uitkomst onbekend blijven.</p></li>
+      </ol>
+    </section>
+
+    <div class="two">
+      <section class="card">
+        <h2>Waarom meten rond KD10 en KD30?</h2>
+        <p><strong>KD betekent korte dag:</strong> de dagen sinds de datum ‘licht uit’ in je planning.</p>
+        <p>Rond <strong>KD10</strong> maakt de app een eerste modelverwachting met de eerste meting. Rond <strong>KD30</strong> kan een apart model ook de tweede meting en de groei tussen de metingen gebruiken.</p>
+        <p>De echte meetdag telt mee. Een meting op dag 11 wordt dus niet behandeld alsof die precies op dag 10 is gedaan.</p>
+      </section>
+      <section class="card">
+        <h2>Worden de dagen langer of korter?</h2>
+        <p>Een teelt in het voorjaar groeit naar langere dagen toe. In het najaar worden de dagen korter. De app neemt de tijd van het jaar, de berekende daglengte en die richting mee.</p>
+        <p>Dat vertelt hoeveel daglicht er <em>mogelijk</em> is. Het vertelt niet hoeveel zon er door de bewolking en de kas heen werkelijk bij de planten komt.</p>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>En licht, temperatuur en water?</h2>
+      <p>Dat hangt af van het gekozen model. Het <strong>basismodel</strong> gebruikt de teelt, takmetingen en het seizoen. Een <strong>lichtmodel</strong> gebruikt ook gecontroleerde lamplichtgegevens. Een <strong>klimaatmodel</strong> kan daarnaast temperatuur, luchtvochtigheid en watergift gebruiken.</p>
+      <p><strong>Priva gaat altijd voor.</strong> Excel-belichting kan alleen aanvullen waar Priva-uren ontbreken. Ook een lege of onbetrouwbare Priva-urenwaarde wordt niet stilletjes door Excel vervangen. Voor een lichtsom moeten de betekenis van de Excel-percentages en de lampcapaciteit eerst zijn gecontroleerd.</p>
+      <p>Een ontbrekende meting betekent ‘we weten het niet’. De app maakt daar geen nul van. Bij onvoldoende gegevens kan hij terugvallen op een beschikbaar eenvoudiger model of een historisch gemiddelde. Je ziet welke uitkomst wordt gebruikt.</p>
+    </section>
+
+    <section class="card">
+      <h2>Wat betekenen de meldingen?</h2>
+      <dl class="guide-statuses">
+        <div><dt>Onbekend</dt><dd>Er is nog geen geschikte modelvoorspelling of betrouwbare historische referentie beschikbaar.</dd></div>
+        <div><dt>Historische referentie</dt><dd>Dit is een gemiddelde van betrouwbare eerdere oogsten van die soort. Het is nog geen voorspelling op basis van jouw takmetingen.</dd></div>
+        <div><dt>Experimenteel</dt><dd>Er is een model, maar het is nog niet vrijgegeven voor normaal gebruik.</dd></div>
+        <div><dt>Vrijgegeven</dt><dd>Het model heeft de ingestelde controles gehaald en een beheerder heeft het aangezet. Ook dit model kan ernaast zitten.</dd></div>
+      </dl>
+    </section>
+
+    <section class="card guide-example">
+      <div class="eyebrow">Verzonnen voorbeeld · geen echte voorspelling</div>
+      <h2>Doel 105 gram, verwachting 100 gram: hoe kan dat?</h2>
+      <p><strong>105 gram is wat je wilt halen.</strong> De verwachting van 100 gram is wat de beschikbare gegevens op dat moment doen vermoeden. Het doel verandert die schatting niet automatisch.</p>
+      <p>Staat er bijvoorbeeld een marge van 94 tot 106 gram bij? Dan laat die zien dat de uitkomst onzeker is. Het echte gewicht kan ook buiten die marge vallen.</p>
+      <p>Een ‘80%-marge’ is bedoeld om ongeveer 8 van de 10 uitkomsten te omvatten. Of dat in jullie teelt ook lukt, moet uit de toetsing blijken. Het is geen garantie.</p>
+    </section>
+
+    <section class="card">
+      <h2>Hoe leert de app, en hoe controleren we hem?</h2>
+      <p>Je registreert ook het echte oogstgewicht. Een beheerder kan met voldoende complete teelten een nieuw model laten maken. Dat gebeurt niet automatisch na iedere invoer.</p>
+      <p>De app oefent op eerdere rondes en wordt getest op latere rondes die hij nog niet heeft gezien. Hij mag daarbij niet alvast het latere oogstgewicht of later ingevoerde gegevens gebruiken. We vergelijken zijn fouten met een eenvoudige historische referentie. Een uitgebreider model moet ook beter presteren dan het basismodel.</p>
+      <p>Een lager gemiddeld verschil tussen voorspelling en oogst is beter. Genoeg teelten hebben is alleen het begin: de verbetering moet ook op nieuwe rondes zichtbaar zijn voordat een beheerder het model kan vrijgeven.</p>
+    </section>
+
+    <section class="card">
+      <h2>Wat kun jij doen voor een betere voorspelling?</h2>
+      <ul class="guide-tips">
+        <li>Meet steeds vijf takken op de afgesproken manier en voer de echte meetdatum in.</li>
+        <li>Houd soort, plantdatum, licht-uitdatum en plantdichtheid goed bij.</li>
+        <li>Controleer importmeldingen en registreer het echte oogstgewicht zorgvuldig.</li>
+        <li>Bekijk bij een voorspelling ook de status, de marge en ontbrekende gegevens.</li>
+      </ul>
+      <p>De app kan nog niet betrouwbaar zeggen hoeveel extra grammen een extra uur licht, water of een andere ingreep oplevert. Een verband in oude teelten is nog geen bewijs van het effect van zo’n verandering.</p>
+      <a href="#models">Bekijk de verwachtingen en modelstatus →</a>
+    </section>
+  </article>`;
 }
 function scenarioForm() {
   modal(

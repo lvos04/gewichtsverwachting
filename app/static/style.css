@@ -69,6 +69,7 @@ textarea:focus-visible {
   position: fixed;
   width: 236px;
   height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -1030,3 +1031,67 @@ progress {
   }
 }
 .two>div,.two>aside{min-width:0}.card p,.card summary{overflow-wrap:anywhere}@media(max-width:1050px){.two{grid-template-columns:minmax(0,1fr)}}
+
+.model-guide {
+  max-width: 1020px;
+}
+.model-guide p {
+  max-width: 76ch;
+  margin: 0 0 14px;
+}
+.model-guide p:last-child {
+  margin-bottom: 0;
+}
+.guide-intro {
+  background: var(--lime);
+  border-color: #d2ddae;
+}
+.guide-steps {
+  padding-left: 25px;
+  margin: 0;
+}
+.guide-steps li {
+  padding-left: 7px;
+  margin-bottom: 20px;
+}
+.guide-steps li:last-child {
+  margin-bottom: 0;
+}
+.guide-steps li::marker {
+  color: var(--green);
+  font-weight: 750;
+}
+.guide-steps li p {
+  margin-top: 5px;
+}
+.guide-statuses {
+  margin: 0;
+}
+.guide-statuses > div {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+.guide-statuses > div:first-child {
+  padding-top: 0;
+}
+.guide-statuses > div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.guide-statuses dt {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.guide-statuses dd {
+  margin: 0;
+  max-width: 76ch;
+}
+.guide-example {
+  border-left: 4px solid var(--green);
+}
+.guide-tips {
+  padding-left: 20px;
+}
+.guide-tips li {
+  margin-bottom: 9px;
+}
