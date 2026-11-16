@@ -4,6 +4,8 @@ Nederlandstalige lokale webapp voor 40 kappen: teeltplanning, vijf-taksmetingen,
 
 **Versie 0.2 voegt klimaatprofielen, review van de aangeleverde historische Excel-werkboeken en seizoenscurves toe.** Registratie en import werken zonder getraind model. De nauwkeurigheid is nog niet aangetoond met bedrijfsgegevens. Een doelgewicht van 105 g wordt nooit als voorspelling gepresenteerd. Zie [opleverstatus](docs/STATUS.md) voor resterende punten uit het bouwplan.
 
+**Versie 0.3** voert het verbeterplan uit: aanmeldbeperking per account én echt IP (vertrouwde proxy instelbaar), optionele tweestapsverificatie, strikte oorsprongcontrole, oogstcorrectie met reden, back-upstatus met schijfruimte, dagelijkse opschoning en een uitschakelbare bedrijfskoppeling (standaard uit). Zie [wijzigingen](docs/WIJZIGINGEN.md).
+
 ## Starten
 
 ```bash
@@ -16,13 +18,13 @@ DATA_DIR=./data uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 Open `http://127.0.0.1:8000` en maak de eerste beheerder aan met een wachtwoord van minimaal twaalf tekens. Er zijn geen standaardaccounts, wachtwoorden of fictieve teelten. Database-migratie en de 40 kappen worden automatisch geïnitialiseerd. Voor lokale OCR zijn Tesseract met de taalpakketten Nederlands/Engels en libzbar nodig; de container bevat die. Zonder OCR blijft handmatige scanreview beschikbaar.
 
 ```bash
-docker build -t gewichtsverwachting:0.2.1 .
-docker run --rm -p 8000:8000 -e DATA_DIR=/data -v chrysant-data:/data gewichtsverwachting:0.2.1
+docker build -t gewichtsverwachting:0.3.0 .
+docker run --rm -p 8000:8000 -e DATA_DIR=/data -v chrysant-data:/data gewichtsverwachting:0.3.0
 ```
 
 Bij een bedrijfsproxy met een eigen vertrouwde CA kan de bouw optioneel `--secret id=build_ca,src=/pad/naar/ca-bundle.pem` gebruiken. Certificaatcontrole blijft ingeschakeld; de CA wordt niet in de image opgeslagen.
 
-[Installatie op TrueNAS via Custom App](docs/TRUENAS.md) · [gebruik en import](docs/GEBRUIK.md) · [back-up en herstel](docs/HERSTEL.md) · [model en seizoen](docs/MODEL.md) · [historische Excel-import](docs/EXCEL.md) · [bedrijfskoppeling API](docs/koppeling-api.md)
+[Installatie op TrueNAS via Custom App](docs/TRUENAS.md) · [gebruik en import](docs/GEBRUIK.md) · [back-up en herstel](docs/HERSTEL.md) · [model en seizoen](docs/MODEL.md) · [historische Excel-import](docs/EXCEL.md) · [bedrijfskoppeling API](docs/koppeling-api.md) · [wijzigingen](docs/WIJZIGINGEN.md)
 
 ## Tijd van het jaar
 

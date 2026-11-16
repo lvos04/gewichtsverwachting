@@ -20,7 +20,7 @@ jobs:
       - name: Opmaak nieuwe modules (ruff format)
         # Bestaande compacte modules worden niet massaal herschreven; nieuwe
         # en opgesplitste modules moeten wel ruff-format volgen.
-        run: ruff format --check app/core_schemas.py tests/test_version.py
+        run: ruff format --check app/core_schemas.py app/mfa.py app/onderhoud.py app/beheer_cli.py tests/conftest.py tests/test_version.py tests/test_verbeteringen.py
       - run: pytest -q
       - run: python -m playwright install --with-deps chromium
       - run: python tests/browser_smoke.py
