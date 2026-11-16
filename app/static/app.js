@@ -1,3 +1,5 @@
+import { installHistoryBulk } from "/static/history_bulk.js";
+
 const $ = (s, r = document) => r.querySelector(s),
   $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (v) =>
@@ -267,6 +269,9 @@ async function logout() {
   auth(false);
 }
 function auth(setup = false, message = "") {
+  const dialog = $("#modal");
+  dialog.close();
+  dialog.replaceChildren();
   $("#app").innerHTML =
     `<div class="auth"><div class="brand"><img src="/static/icon.svg" alt=""><div>chrysant<small>Gewichtsverwachting</small></div></div><section class="card"><div class="eyebrow">Welkom in de kas</div><h1>${setup ? "Een goede start" : "Aanmelden"}</h1><p class="sub">${setup ? "Maak het eerste beheerdersaccount aan." : "Je teelten, metingen en verwachtingen op één plek."}</p>${message ? `<p class="notice warn">${esc(message)}</p>` : ""}<form id="auth-form">${field("username", "Gebruikersnaam", "text", "", 'required autocomplete="username" maxlength="80"')}${field("password", "Wachtwoord", "password", "", 'required autocomplete="' + (setup ? "new-password" : "current-password") + '" ' + (setup ? 'minlength="12"' : ""))}${setup ? '<p class="hint">Kies een sterk wachtwoord van minimaal 12 tekens.</p>' : ""}${formError()}<button class="primary" type="submit" style="width:100%">${setup ? "Account aanmaken" : "Inloggen"} →</button></form></section><p class="hint">Bedrijfsgegevens blijven op je eigen server. Metingen kun je na aanmelden ook zonder bereik vastleggen.</p></div>`;
   bindForm("#auth-form", async (data) => {
@@ -2285,12 +2290,14 @@ async function historyReview(id) {
   const alive = pageOwner("imports");
   let job = await api(`/api/history-imports/${id}`);
   if (!alive()) return;
+  if(job.mapping?.profile==="legacy_paired")return legacyCompanyReview(id,job.mapping.program_import_id);
   const dialog = modal(
     `Historisch werkboek #${id}`,
     '<div id="history-detail"></div>',
   );
   const container = $("#history-detail", dialog);
   const active = () => alive() && container.isConnected && dialog.open;
+  const reviewRequest=historyReviewRequest(container,active);
   let mapping = job.mapping ||
     job.mapping_config || {
       sheet: job.sheets?.[0]?.name || "",
@@ -2301,6 +2308,8 @@ async function historyReview(id) {
       date_year_policy: "explicit_only",
     };
   let overrides = (mapping.overrides || []).map((row) => ({ ...row }));
+  const selectedRows = new Set();
+  let bulkPanel = null;
   function draw() {
     if (!active()) return;
     const finalized = job.status === "confirmed";
@@ -2383,7 +2392,7 @@ async function historyReview(id) {
         overrides,
         date_year_policy: "explicit_only",
       };
-      job = await api(`/api/history-imports/${id}/mapping`, {
+      job = await reviewRequest(`/api/history-imports/${id}/mapping`, {
         method: "POST",
         body: mapping,
       });
@@ -2412,7 +2421,7 @@ async function historyReview(id) {
             )
             .join(" · ")}</div>`
         : ""
-    }${rows.length ? `<div class="table-wrap history-preview"><table><thead><tr><th>Bronrij</th><th>Status</th><th>Ronde / kap / soort</th><th>Gewicht</th><th>Aandacht</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.row_number)}</td><td>${tag({ valid: "Geldig", ambiguous: "Beoordelen", invalid: "Ongeldig", excluded: "Uitgesloten", duplicate: "Al geïmporteerd", imported: "Geïmporteerd" }[row.status] || row.status, row.status === "valid" ? "" : "warn")}</td><td>${esc(sourceValue(row.effective?.round_name))}<br>Kap ${esc(sourceValue(row.effective?.bay_number))} · ${esc(sourceValue(row.effective?.variety))}</td><td>${esc(sourceValue(row.effective?.weight_g)) || "—"}</td><td>${esc((row.reasons || []).join(" · "))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nog geen gekoppeld voorbeeld", "Kies de bronkolommen en laat de app de rijen controleren.")}${
+    }${rows.length ? `<div class="table-wrap history-preview"><table><thead><tr><th>Bronrij</th><th>Status</th><th>Ronde / kap / soort</th><th>Gewicht</th><th>Aandacht</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(historySourceLabel(row))}</td><td>${tag({ valid: "Geldig", ambiguous: "Beoordelen", invalid: "Ongeldig", excluded: "Uitgesloten", duplicate: "Al geïmporteerd", imported: "Geïmporteerd" }[row.status] || row.status, row.status === "valid" ? "" : "warn")}</td><td>${esc(sourceValue(row.effective?.round_name))}<br>Kap ${esc(sourceValue(row.effective?.bay_number))} · ${esc(sourceValue(row.effective?.variety))}</td><td>${esc(sourceValue(row.effective?.weight_g)) || "—"}</td><td>${esc((row.reasons || []).join(" · "))}</td></tr>`).join("")}</tbody></table></div>` : empty("Nog geen gekoppeld voorbeeld", "Kies de bronkolommen en laat de app de rijen controleren.")}${
       rows.length && !finalized
         ? `<form id="history-correction-form" class="history-row-editor"><h3>Een bronrij beoordelen of corrigeren</h3><div class="field"><label for="history-correct-row">Bronrij</label><select id="history-correct-row">${rows
             .slice()
@@ -2429,33 +2438,17 @@ async function historyReview(id) {
               "",
             )}</select></div><div id="history-correction-fields"></div>${formError()}<button type="submit">Correctie toepassen & opnieuw controleren</button></form>`
         : ""
-    }${rows.length ? `<div class="actions" style="margin-top:18px">${!finalized ? `<button class="primary" id="confirm-history" ${summary.ambiguous > 0 || rows.some((row) => !["valid", "excluded", "duplicate"].includes(row.status)) ? 'disabled title="Corrigeer of sluit alle onduidelijke rijen uit met een reden"' : ""}>Gecontroleerde teelten definitief importeren</button>` : '<span class="tag">Bevestigd · teelten geregistreerd</span>'}</div>` : ""}`;
-    if (job.preview?.total > (job.preview?.limit || 200)) {
-      const offset = job.preview.offset || 0,
-        limit = job.preview.limit || 200,
-        total = job.preview.total;
-      target.insertAdjacentHTML(
-        "afterbegin",
-        `<div class="actions" style="margin-bottom:12px"><button type="button" id="history-previous" class="small" ${offset === 0 ? "disabled" : ""}>← Vorige rijen</button><span class="hint" style="align-self:center">${offset + 1}–${Math.min(offset + rows.length, total)} van ${total}</span><button type="button" id="history-next" class="small" ${offset + limit >= total ? "disabled" : ""}>Volgende rijen →</button></div>`,
-      );
-      async function showPage(nextOffset) {
-        try {
-          const preview = await api(
-            `/api/history-imports/${id}/rows?offset=${nextOffset}&limit=${limit}`,
-          );
-          if (active()) {
-            job.preview = preview;
-            drawRows();
-            applyPermissions();
-          }
-        } catch (error) {
-          toast(error.message);
-        }
-      }
-      $("#history-previous", dialog).onclick = () =>
-        showPage(Math.max(0, offset - limit));
-      $("#history-next", dialog).onclick = () => showPage(offset + limit);
+    }${rows.length ? `<div class="actions" style="margin-top:18px">${!finalized ? `<button class="primary" id="confirm-history" ${summary.ambiguous > 0 || rows.some((row) => !["valid", "excluded", "duplicate"].includes(row.status)) ? 'disabled title="Corrigeer of sluit alle onduidelijke rijen uit met een reden"' : ""}>Gecontroleerde teelten definitief importeren</button>` : '<span class="tag">Bevestigd · teelten geregistreerd</span><button type="button" data-history-new-review>Uitgesloten regels alsnog beoordelen</button>'}</div>` : ""}`;
+    historyRowTools({target,job,rows,selectedRows,finalized,isActive:active,
+      onSelection:()=>bulkPanel?.refreshSelection(),
+      onPage:async(offset,limit)=>{job.preview=await api(`/api/history-imports/${id}/rows?offset=${offset}&limit=${limit}`);if(active()){drawRows();applyPermissions();}}});
+    bulkPanel?.destroy();
+    if(rows.length&&!finalized){
+      const host=document.createElement('section');host.className='history-bulk-host';target.querySelector('.history-row-tools').after(host);
+      bulkPanel=installHistoryBulk({container:host,importId:id,mode:'generic',request:reviewRequest,isActive:active,canWrite:user.role!=='lezer',
+        getSelectedRows:()=>[...selectedRows],onStaged:async detail=>{if(!active())return;job=detail;mapping=detail.mapping;overrides=(mapping.overrides||[]).map(row=>({...row}));selectedRows.clear();draw();}});
     }
+    bindNewHistoryReview(target,id,active,dialog);
     if (!rows.length || finalized) return;
     function drawCorrection() {
       const row = rows.find(
@@ -2484,7 +2477,7 @@ async function historyReview(id) {
         reason: data["correction-reason"],
       });
       mapping = { ...mapping, overrides };
-      job = await api(`/api/history-imports/${id}/mapping`, {
+      job = await reviewRequest(`/api/history-imports/${id}/mapping`, {
         method: "POST",
         body: mapping,
       });
@@ -2694,9 +2687,12 @@ async function legacyCompanyReview(weightId,programId) {
   const programs=(sources.imports||sources).filter(source=>source.profile==='legacy_program_workbook');
   const existing=job.mapping?.program_import_id?job.mapping:{};
   let config={program_import_id:programId||existing.program_import_id,round_years:existing.round_years||{},weekday_convention:'iso_monday_1',single_species_beds:existing.single_species_beds??null,group_rounds:existing.group_rounds||{},group_round_reason:existing.group_round_reason||'',program_record_selection:existing.program_record_selection||{},program_record_selection_reason:existing.program_record_selection_reason||'',overrides:existing.overrides||[],include_unweighted_planning:existing.include_unweighted_planning||false,include_program_only_planning:existing.include_program_only_planning||false,planning_status:existing.planning_status||'historical',exclude_ambiguous:false,exclusion_reason:''};
+  const selectedRows=new Set();
+  let bulkPanel=null;
   let weekdayConfirmed=Object.keys(config.round_years).length>0;
   const dialog=modal('Bedrijfsbestanden · gecontroleerde reconstructie','<div id="legacy-company-detail"><p class="hint">Bronnen en rondekoppelingen worden verkend…</p></div>');
   const container=$('#legacy-company-detail',dialog),active=()=>alive()&&container.isConnected&&dialog.open;
+  const reviewRequest=historyReviewRequest(container,active);
   async function preview(){
     const controls=$$('input,select,textarea,button',container).map(element=>[element,element.disabled]);
     controls.forEach(([element])=>element.disabled=true);container.setAttribute('aria-busy','true');
@@ -2707,9 +2703,9 @@ async function legacyCompanyReview(weightId,programId) {
   function draw() {
     if(!active())return;
     const profile=job.legacy_profile||{},matches=profile.matches||[],rounds=(profile.program_rounds||[]).map(roundKey).filter(Boolean),finalized=job.status==='confirmed';
-    const selectedRounds=[...new Set(matches.map(match=>config.group_rounds[String(match.group_index)]||match.matched_round).filter(Boolean))];
-    const yearRounds=config.include_program_only_planning?rounds:selectedRounds;
-    container.innerHTML=`<p class="notice"><strong>Priva gaat altijd voor.</strong> Dit voorbeeld reconstrueert historische teelten, planning en gewichten. Het werkblad met vijfminutenbelichting wordt via een aparte aanvullende import verwerkt.</p><p class="hint">Gewichtsbron #${weightId} · ${esc(job.filename)} · ${esc(job.sha256)}</p><form id="legacy-config-form"><div class="field"><label for="legacy-program">Bijbehorend Teeltprogramma</label><select id="legacy-program" name="program_import_id" required>${options(programs,'id',source=>`#${source.id} · ${source.filename}`,config.program_import_id)}</select></div><h3>1. Controleer rondekoppelingen</h3><p class="hint">Voorstellen zijn gebaseerd op overeenkomstige kap-, plantweek- en weekdagwaarden. Controleer conflicten aan de hand van de bron; een bestandsnaam bepaalt de koppeling niet.</p>${matches.length?`<div class="table-wrap"><table><thead><tr><th>Blok / bronrijen</th><th>Gekoppelde ronde</th><th>Letterlijke bronankers</th></tr></thead><tbody>${matches.map(match=>`<tr><td>Blok ${esc(match.group_index)}<br>${esc(match.start_row)}–${esc(match.end_row)}</td><td><select aria-label="Teeltprogrammaronde voor blok ${esc(match.group_index)}" data-group-round="${esc(match.group_index)}" data-proposed-round="${esc(match.matched_round||'')}"><option value="">Geen eenduidige koppeling</option>${rounds.map(round=>`<option value="${esc(round)}" ${(config.group_rounds[String(match.group_index)]||match.matched_round)===round?'selected':''}>${esc(round)}</option>`).join('')}</select><label class="inline"><input type="checkbox" data-confirm-group="${esc(match.group_index)}" ${config.group_rounds[String(match.group_index)]?'checked':''}> Deze rondekoppeling handmatig bevestigen</label></td><td>${(match.candidates||[]).map(candidate=>`${esc(candidate.round_name)}: ${fmt(candidate.exact)} gelijk / ${fmt(candidate.contradictions)} tegenstrijdig`).join('<br>')||'Geen bruikbare ankers'}</td></tr>`).join('')}</tbody></table></div>`:empty('Geen gekoppelde rondeblokken','Controleer of de geselecteerde bronnen bij elkaar horen.')}${area('legacy-group-reason','Onderbouwing van gewijzigde rondekoppelingen',config.group_round_reason)}<h3>2. Bevestig plantjaren en weekdagen</h3><p class="notice warn">Vul het ISO-jaar van de eerste plantweek van elke ronde in. Overgangen naar een volgend kalenderjaar worden alleen op basis van deze expliciete ankers gereconstrueerd. Geen jaar wordt uit de bestandsnaam overgenomen.</p>${yearRounds.length?`<div class="form-grid">${yearRounds.map((round,index)=>`<div class="field"><label for="legacy-year-${index}">${esc(round)} · plantjaar</label><input id="legacy-year-${index}" data-year-round="${esc(round)}" type="number" min="1900" max="2100" step="1" value="${esc(config.round_years[round]??'')}" placeholder="Onbekend totdat bevestigd"></div>`).join('')}</div>`:empty('Kies eerst een rondekoppeling','Pas het voorbeeld opnieuw toe om de bijbehorende jaarankers te tonen.')}<div class="form-grid"><div class="field"><label for="legacy-weekday">Geverifieerde betekenis van weekdagen</label><select id="legacy-weekday" name="weekday_convention" required><option value="">Nog niet bevestigd</option><option value="iso_monday_1" ${weekdayConfirmed?'selected':''}>Maandag = 1 t/m zondag = 7</option></select></div>${field('legacy-single-beds','Bedden bij enkelsoortige code (leeg = onbekend)','number',config.single_species_beds??'','min="1" max="6" step="1"')}</div><label class="inline field"><input type="checkbox" name="years_confirmed" required> Ik heb de ingevulde plantjaren en weekdagbetekenis aan de bron gecontroleerd.</label><details><summary>Opties voor ontbrekende gewichten en planning</summary><label class="inline field"><input type="checkbox" name="include_unweighted_planning" ${config.include_unweighted_planning?'checked':''}> Kapregels zonder eindgewicht als historische planning meenemen.</label><label class="inline field"><input type="checkbox" name="include_program_only_planning" ${config.include_program_only_planning?'checked':''}> Ook alleen in het Teeltprogramma aanwezige regels als historische planning meenemen.</label><div class="field"><label for="legacy-planning-status">Status voor regels zonder eindgewicht</label><select id="legacy-planning-status" name="planning_status"><option value="historical" ${config.planning_status==='historical'?'selected':''}>Historische planning</option><option value="planned" ${config.planning_status==='planned'?'selected':''}>Gepland (bewust actief in planning opnemen)</option></select></div><p class="hint">Een geplande datum wordt geen werkelijke oogstdatum. Ontbrekende gewichten blijven onbekend.</p><label class="inline field"><input type="checkbox" name="exclude_ambiguous" ${config.exclude_ambiguous?'checked':''}> Alle resterende onduidelijke regels uitsluiten van definitieve import.</label>${area('legacy-exclusion-reason','Reden voor gezamenlijke uitsluiting',config.exclusion_reason)}</details>${formError()}<button type="submit" class="primary">Jaarankers en koppelingen opnieuw controleren</button></form><section id="legacy-company-rows" class="section"></section>`;
+    const yearRounds=rounds;
+    container.innerHTML=`<p class="notice"><strong>Priva gaat altijd voor.</strong> Dit voorbeeld reconstrueert historische teelten, planning en gewichten. Het werkblad met vijfminutenbelichting wordt via een aparte aanvullende import verwerkt.</p><p class="hint">Gewichtsbron #${weightId} · ${esc(job.filename)} · ${esc(job.sha256)}</p>${historyAccounting(job)}<form id="legacy-config-form"><div class="field"><label for="legacy-program">Bijbehorend Teeltprogramma</label><select id="legacy-program" name="program_import_id" required>${options(programs,'id',source=>`#${source.id} · ${source.filename}`,config.program_import_id)}</select></div><h3>1. Controleer rondekoppelingen</h3><p class="hint">Voorstellen zijn gebaseerd op overeenkomstige kap-, plantweek- en weekdagwaarden. Controleer conflicten aan de hand van de bron; een bestandsnaam bepaalt de koppeling niet.</p>${matches.length?`<div class="table-wrap"><table><thead><tr><th>Blok / bronrijen</th><th>Gekoppelde ronde</th><th>Letterlijke bronankers</th></tr></thead><tbody>${matches.map(match=>`<tr><td>Blok ${esc(match.group_index)}<br>${esc(match.start_row)}–${esc(match.end_row)}</td><td><select aria-label="Teeltprogrammaronde voor blok ${esc(match.group_index)}" data-group-round="${esc(match.group_index)}" data-proposed-round="${esc(match.matched_round||'')}"><option value="">Geen eenduidige koppeling</option>${rounds.map(round=>`<option value="${esc(round)}" ${(config.group_rounds[String(match.group_index)]||match.matched_round)===round?'selected':''}>${esc(round)}</option>`).join('')}</select><label class="inline"><input type="checkbox" data-confirm-group="${esc(match.group_index)}" ${config.group_rounds[String(match.group_index)]?'checked':''}> Deze rondekoppeling handmatig bevestigen</label></td><td>${(match.candidates||[]).map(candidate=>`${esc(candidate.round_name)}: ${fmt(candidate.exact)} gelijk / ${fmt(candidate.contradictions)} tegenstrijdig`).join('<br>')||'Geen bruikbare ankers'}</td></tr>`).join('')}</tbody></table></div>`:empty('Geen gekoppelde rondeblokken','Controleer of de geselecteerde bronnen bij elkaar horen.')}${area('legacy-group-reason','Onderbouwing van gewijzigde rondekoppelingen',config.group_round_reason)}<h3>2. Bevestig plantjaren en weekdagen</h3><p class="notice warn">Vul het ISO-jaar van de eerste plantweek van elke ronde in. Overgangen naar een volgend kalenderjaar worden alleen op basis van deze expliciete ankers gereconstrueerd. Geen jaar wordt uit de bestandsnaam overgenomen.</p>${historyYearBulk(yearRounds)}${yearRounds.length?`<div class="form-grid">${yearRounds.map((round,index)=>`<div class="field"><label for="legacy-year-${index}">${esc(round)} · plantjaar</label><input id="legacy-year-${index}" data-year-round="${esc(round)}" type="number" min="1900" max="2100" step="1" value="${esc(config.round_years[round]??'')}" placeholder="Onbekend totdat bevestigd"></div>`).join('')}</div>`:empty('Kies eerst een rondekoppeling','Pas het voorbeeld opnieuw toe om de bijbehorende jaarankers te tonen.')}<div class="form-grid"><div class="field"><label for="legacy-weekday">Geverifieerde betekenis van weekdagen</label><select id="legacy-weekday" name="weekday_convention" required><option value="">Nog niet bevestigd</option><option value="iso_monday_1" ${weekdayConfirmed?'selected':''}>Maandag = 1 t/m zondag = 7</option></select></div>${field('legacy-single-beds','Bedden bij enkelsoortige code (leeg = onbekend)','number',config.single_species_beds??'','min="1" max="6" step="1"')}</div><label class="inline field"><input type="checkbox" name="years_confirmed" required> Ik heb de ingevulde plantjaren en weekdagbetekenis aan de bron gecontroleerd.</label><details open><summary>Welke regels wil je meenemen?</summary><p class="hint">Alle gevonden regels blijven zichtbaar, ook als je ze nog niet meeneemt. Uitgesloten betekent niet verwijderd.</p><label class="inline field"><input type="checkbox" name="include_unweighted_planning" ${config.include_unweighted_planning?'checked':''}> Kapregels zonder eindgewicht als historische planning meenemen.</label><label class="inline field"><input type="checkbox" name="include_program_only_planning" ${config.include_program_only_planning?'checked':''}> Ook alleen in het Teeltprogramma aanwezige regels als historische planning meenemen.</label><div class="field"><label for="legacy-planning-status">Status voor regels zonder eindgewicht</label><select id="legacy-planning-status" name="planning_status"><option value="historical" ${config.planning_status==='historical'?'selected':''}>Historische planning</option><option value="planned" ${config.planning_status==='planned'?'selected':''}>Gepland (bewust actief in planning opnemen)</option></select></div><p class="hint">Een geplande datum wordt geen werkelijke oogstdatum. Ontbrekende gewichten blijven onbekend.</p><label class="inline field"><input type="checkbox" name="exclude_ambiguous" ${config.exclude_ambiguous?'checked':''}> Alle resterende onduidelijke regels uitsluiten van definitieve import.</label>${area('legacy-exclusion-reason','Reden voor gezamenlijke uitsluiting',config.exclusion_reason)}</details>${formError()}<button type="submit" class="primary">Jaarankers en koppelingen opnieuw controleren</button></form><section id="legacy-company-rows" class="section"></section>`;
+    bindHistoryYearBulk(dialog);
     bindForm('#legacy-config-form',async data=>{
       const overrides={};$$('[data-group-round]',dialog).forEach(input=>{if(input.value&&(input.value!==input.dataset.proposedRound||$(`[data-confirm-group="${input.dataset.groupRound}"]`,dialog)?.checked))overrides[input.dataset.groupRound]=input.value});
       if(Object.keys(overrides).length&&!data['legacy-group-reason']?.trim())throw new Error('Onderbouw elke gewijzigde rondekoppeling.');
@@ -2725,13 +2721,21 @@ async function legacyCompanyReview(weightId,programId) {
   function drawRows(){
     if(!active())return;
     const target=$('#legacy-company-rows',dialog),rows=job.preview?.rows||[],summary=job.preview?.summary||job.summary||{},finalized=job.status==='confirmed';
-    target.innerHTML=`<h3>3. Controleer kappen, soorten en gewichtsklassen</h3><div class="notice">${Object.entries(summary).map(([key,value])=>`${esc(({total_rows:'Bronregels',valid:'Geldig',ambiguous:'Te beoordelen',excluded:'Uitgesloten',duplicate:'Al geïmporteerd'})[key]||key)}: ${esc(sourceValue(value))}`).join(' · ')}</div><p class="hint">Gemengde kappen en toegewezen historische gewichten blijven gemarkeerd. 95 / 65 g blijft twee klassen, zonder gemiddeld eindgewicht. Een onduidelijke soort is geen zuiver trainingslabel.</p>${rows.length?`<div class="table-wrap history-preview"><table><thead><tr><th>Bronrij / status</th><th>Ronde / kap / soort</th><th>Planten / licht uit / oogst</th><th>Gewicht</th><th>Beoordeling</th></tr></thead><tbody>${rows.map(row=>{const value=row.effective||{};return `<tr><td>${esc(row.row_number)} ${tag(({valid:'Geldig',ambiguous:'Beoordelen',excluded:'Uitgesloten',duplicate:'Bestaand',imported:'Geïmporteerd'})[row.status]||row.status,row.status==='valid'?'':'warn')}</td><td>${esc(value.round_name||'Onbekende ronde')}<br>Kap ${esc(value.bay_number??row.original?.bay_number??'—')} · ${esc(sourceValue(value.variety??value.schema_code)||'Onbekende soort')}</td><td>${legacyDate(value.plant_date)}<br>${legacyDate(value.light_out_date)}<br>${legacyDate(value.harvest_end_date)}</td><td>${legacyRowWeight(row)}</td><td>${(row.reasons||[]).map(reason=>esc(legacyReason(reason))).join('<br>')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Geen teeltregels beschikbaar')}${rows.length&&!finalized?`<form id="legacy-row-form" class="history-row-editor"><h3>Bronregel beoordelen</h3><div class="field"><label for="legacy-review-row">Bronrij</label><select id="legacy-review-row">${rows.slice().sort((a,b)=>(a.status==='valid')-(b.status==='valid')||a.row_number-b.row_number).map(row=>`<option value="${row.row_number}">Rij ${row.row_number} · ${esc(row.effective?.round_name||'')} · kap ${esc(row.effective?.bay_number??row.original?.bay_number??'')} · ${row.status==='ambiguous'?'controle nodig':row.status}</option>`).join('')}</select></div><div id="legacy-review-fields"></div>${formError()}<button type="submit">Rijcorrectie opnieuw controleren</button></form><button class="primary" id="legacy-confirm" ${summary.ambiguous>0?'disabled title="Los alle onduidelijke regels op of sluit ze met een reden uit"':''}>Gecontroleerde teelten definitief importeren</button>`:finalized?'<p class="tag">Bevestigd · bronkoppelingen bewaard</p>':''}`;
-    const offset=job.preview?.offset||0,limit=job.preview?.limit||200,total=job.preview?.total||rows.length;
-    if(total>limit){target.insertAdjacentHTML('afterbegin',`<div class="actions"><button id="legacy-previous" class="small" ${offset?'':'disabled'}>← Vorige rijen</button><span class="hint">${offset+1}–${Math.min(offset+rows.length,total)} van ${total}</span><button id="legacy-next" class="small" ${offset+limit>=total?'disabled':''}>Volgende rijen →</button></div>`);const page=async next=>{try{const response=await api(`/api/history-imports/${weightId}/rows?offset=${next}&limit=${limit}`);if(active()){job.preview=response;drawRows();applyPermissions()}}catch(error){toast(error.message)}};$('#legacy-previous',dialog).onclick=()=>page(Math.max(0,offset-limit));$('#legacy-next',dialog).onclick=()=>page(offset+limit);}
+    target.innerHTML=`<h3>3. Controleer kappen, soorten en gewichtsklassen</h3><div class="notice">${Object.entries(summary).filter(([key])=>['total_rows','valid','ambiguous','excluded','duplicate'].includes(key)).map(([key,value])=>`${esc(({total_rows:'Bronregels',valid:'Geldig',ambiguous:'Te beoordelen',excluded:'Uitgesloten',duplicate:'Al geïmporteerd'})[key]||key)}: ${esc(sourceValue(value))}`).join(' · ')}</div><p class="hint">Gemengde kappen en toegewezen historische gewichten blijven gemarkeerd. 95 / 65 g blijft twee klassen, zonder gemiddeld eindgewicht. Een onduidelijke soort is geen zuiver trainingslabel.</p>${rows.length?`<div class="table-wrap history-preview"><table><thead><tr><th>Bronrij / status</th><th>Ronde / kap / soort</th><th>Planten / licht uit / oogst</th><th>Gewicht</th><th>Beoordeling</th></tr></thead><tbody>${rows.map(row=>{const value=row.effective||{};return `<tr><td>${esc(historySourceLabel(row))} ${tag(({valid:'Geldig',ambiguous:'Beoordelen',excluded:'Uitgesloten',duplicate:'Bestaand',imported:'Geïmporteerd'})[row.status]||row.status,row.status==='valid'?'':'warn')}</td><td>${esc(value.round_name||'Onbekende ronde')}<br>Kap ${esc(value.bay_number??row.original?.bay_number??'—')} · ${esc(sourceValue(value.variety??value.schema_code)||'Onbekende soort')}</td><td>${legacyDate(value.plant_date)}<br>${legacyDate(value.light_out_date)}<br>${legacyDate(value.harvest_end_date)}</td><td>${legacyRowWeight(row)}</td><td>${(row.reasons||[]).map(reason=>esc(legacyReason(reason))).join('<br>')}</td></tr>`}).join('')}</tbody></table></div>`:empty('Geen teeltregels beschikbaar')}${rows.length&&!finalized?`<form id="legacy-row-form" class="history-row-editor"><h3>Bronregel beoordelen</h3><div class="field"><label for="legacy-review-row">Bronrij</label><select id="legacy-review-row">${rows.slice().sort((a,b)=>(a.status==='valid')-(b.status==='valid')||a.row_number-b.row_number).map(row=>`<option value="${row.row_number}">Rij ${row.row_number} · ${esc(row.effective?.round_name||'')} · kap ${esc(row.effective?.bay_number??row.original?.bay_number??'')} · ${row.status==='ambiguous'?'controle nodig':row.status}</option>`).join('')}</select></div><div id="legacy-review-fields"></div>${formError()}<button type="submit">Rijcorrectie opnieuw controleren</button></form><button class="primary" id="legacy-confirm" ${summary.ambiguous>0?'disabled title="Los alle onduidelijke regels op of sluit ze met een reden uit"':''}>Gecontroleerde teelten definitief importeren</button>`:finalized?'<p class="tag">Bevestigd · bronkoppelingen bewaard</p><button type="button" data-history-new-review>Uitgesloten of aanvullende regels alsnog beoordelen</button>':''}`;
+    historyRowTools({target,job,rows,selectedRows,finalized,isActive:active,
+      onSelection:()=>bulkPanel?.refreshSelection(),
+      onPage:async(offset,limit)=>{job.preview=await api(`/api/history-imports/${weightId}/rows?offset=${offset}&limit=${limit}`);if(active()){drawRows();applyPermissions();}}});
+    bulkPanel?.destroy();
+    if(rows.length&&!finalized){
+      const host=document.createElement('section');host.className='history-bulk-host';target.querySelector('.history-row-tools').after(host);
+      bulkPanel=installHistoryBulk({container:host,importId:weightId,mode:'company',request:reviewRequest,isActive:active,canWrite:user.role!=='lezer',
+        getSelectedRows:()=>[...selectedRows],onStaged:async detail=>{if(!active())return;job=detail;Object.keys(config).forEach(key=>{if(key in detail.mapping)config[key]=detail.mapping[key]});selectedRows.clear();draw();}});
+    }
+    bindNewHistoryReview(target,weightId,active,dialog);
     if(!rows.length||finalized)return;
     function editor(){
       const row=rows.find(row=>row.row_number===+$('#legacy-review-row',dialog).value),existing=config.overrides.find(item=>item.row_number===row.row_number),value={...row.effective,...existing?.fields};
-      $('#legacy-review-fields',dialog).innerHTML=`<p class="hint">Corrigeer uitsluitend wat je hebt gecontroleerd. Lege datums en soortcodes blijven onbekend; formule-uitkomsten worden niet automatisch als feiten overgenomen.</p><div class="form-grid">${HISTORY_FIELDS.map(([key,label])=>field('legacy-correct-'+key,label,'text',sourceValue(value[key]).replace(key.endsWith('_date')?/T.*$/:/$^/,''))).join('')}</div><label class="inline field"><input name="exclude" type="checkbox" ${existing?.exclude?'checked':''}> Deze bronregel uitsluiten</label>${row.original?.anchor_mismatch?`<label class="inline field"><input type="checkbox" name="accept_anchor_mismatch" ${existing?.accept_anchor_mismatch?'checked':''}> Ik heb de tegenstrijdige plantweek/-dag gecontroleerd en accepteer deze bronkoppeling.</label>`:''}${row.original?.duplicate_program_bay?`<div class="field"><label for="legacy-program-record">Kies de gecontroleerde programmarij voor deze ronde en kap</label><select id="legacy-program-record" name="program_record_row"><option value="">Nog geen bronrij gekozen</option>${(row.original.program_candidates||[]).map(candidate=>`<option value="${candidate.row_number}" ${config.program_record_selection[row.effective?.round_name+':'+row.effective?.bay_number]===candidate.row_number?'selected':''}>Programmarij ${candidate.row_number} · ${esc(sourceValue(candidate.source_cells?.schema_code?.value))}</option>`).join('')}</select></div><details><summary>Alle dubbele programmarijen vergelijken</summary>${(row.original.program_candidates||[]).map(candidate=>`<h3>Programmarij ${candidate.row_number}</h3>${sourceCellsTable(candidate.source_cells,row.effective?.round_name||'Teeltprogramma')}`).join('')}</details>`:''}${area('legacy-row-reason','Onderbouwing van de rijbeoordeling',existing?.reason||'')}<details><summary>Broncellen en oorspronkelijke gegevens</summary>${sourceCellsTable(row.original?.weight_source_cells||row.original?.source_cells||row.source_cells,row.source?.sheet||row.original?.sheet||'teeltschema')}${row.original?.program_source_cells?sourceCellsTable(row.original.program_source_cells,row.source?.program_sheet||row.effective?.round_name||'Teeltprogramma'):''}</details>`;
+      $('#legacy-review-fields',dialog).innerHTML=`<p class="hint">Corrigeer uitsluitend wat je hebt gecontroleerd. Lege datums en soortcodes blijven onbekend; formule-uitkomsten worden niet automatisch als feiten overgenomen.</p><div class="form-grid">${HISTORY_FIELDS.map(([key,label])=>field('legacy-correct-'+key,label,'text',sourceValue(value[key]).replace(key.endsWith('_date')?/T.*$/:/$^/,''))).join('')}</div><label class="inline field"><input name="exclude" type="checkbox" ${existing?.exclude?'checked':''}> Deze bronregel uitsluiten</label>${row.effective?.weight_g==null?`<label class="inline field"><input type="checkbox" name="include_planning" ${existing?.include_planning?'checked':''}> Deze regel zonder eindgewicht als planning meenemen</label>`:''}${row.original?.anchor_mismatch?`<label class="inline field"><input type="checkbox" name="accept_anchor_mismatch" ${existing?.accept_anchor_mismatch?'checked':''}> Ik heb de tegenstrijdige plantweek/-dag gecontroleerd en accepteer deze bronkoppeling.</label>`:''}${row.original?.duplicate_program_bay?`<div class="field"><label for="legacy-program-record">Kies de gecontroleerde programmarij voor deze ronde en kap</label><select id="legacy-program-record" name="program_record_row"><option value="">Nog geen bronrij gekozen</option>${(row.original.program_candidates||[]).map(candidate=>`<option value="${candidate.row_number}" ${config.program_record_selection[row.effective?.round_name+':'+row.effective?.bay_number]===candidate.row_number?'selected':''}>Programmarij ${candidate.row_number} · ${esc(sourceValue(candidate.source_cells?.schema_code?.value))}</option>`).join('')}</select></div><details><summary>Alle dubbele programmarijen vergelijken</summary>${(row.original.program_candidates||[]).map(candidate=>`<h3>Programmarij ${candidate.row_number}</h3>${sourceCellsTable(candidate.source_cells,row.effective?.round_name||'Teeltprogramma')}`).join('')}</details>`:''}${area('legacy-row-reason','Onderbouwing van de rijbeoordeling',existing?.reason||'')}<details><summary>Broncellen en oorspronkelijke gegevens</summary>${sourceCellsTable(row.original?.weight_source_cells||row.original?.source_cells||row.source_cells,row.source?.sheet||row.original?.sheet||'teeltschema')}${row.original?.program_source_cells?sourceCellsTable(row.original.program_source_cells,row.source?.program_sheet||row.effective?.round_name||'Teeltprogramma'):''}</details>`;
       $('#legacy-row-reason',dialog).required=true;
     }
     $('#legacy-review-row',dialog).onchange=editor;editor();
@@ -2739,7 +2743,7 @@ async function legacyCompanyReview(weightId,programId) {
       const number=+$('#legacy-review-row',dialog).value,row=rows.find(row=>row.row_number===number),existing=config.overrides.find(item=>item.row_number===number),fields={...existing?.fields};
       HISTORY_FIELDS.forEach(([key])=>{const baseline=sourceValue(row.effective?.[key]).replace(key.endsWith('_date')?/T.*$/:/$^/,'');if(data['legacy-correct-'+key]!==baseline)fields[key]=data['legacy-correct-'+key]||null});
       if(data.program_record_row){config.program_record_selection[row.effective.round_name+':'+row.effective.bay_number]=+data.program_record_row;config.program_record_selection_reason=data['legacy-row-reason'];}
-      config.overrides=config.overrides.filter(item=>item.row_number!==number);config.overrides.push({row_number:number,fields,exclude:data.exclude==='on',accept_anchor_mismatch:data.accept_anchor_mismatch==='on',reason:data['legacy-row-reason']});await preview();
+      config.overrides=config.overrides.filter(item=>item.row_number!==number);config.overrides.push({row_number:number,fields,exclude:data.exclude==='on',accept_anchor_mismatch:data.accept_anchor_mismatch==='on',include_planning:data.include_planning==='on',confirm_program_round_title:existing?.confirm_program_round_title||false,reason:data['legacy-row-reason']});await preview();
     });
     $('#legacy-confirm',dialog).onclick=async()=>{if(!confirm('Jaarankers, weekdagen, soortbedden, gewichtsklassen en uitgesloten regels gecontroleerd? Deze historische teelten definitief registreren?'))return;try{await api(`/api/history-imports/${weightId}/confirm`,{method:'POST',body:{confirmed:true}});job=await api(`/api/history-imports/${weightId}`);if(active()){draw();toast('Bedrijfshistorie bevestigd');await getBase();if(active())await historicalImports()}}catch(error){toast(error.message)}};
   }
@@ -2749,7 +2753,7 @@ async function legacyCompanyReview(weightId,programId) {
     const raw=row.effective?.weight_g??row.effective?.weight_raw??row.original?.weight_raw??row.original?.weight_g;
     return raw===null||raw===undefined||raw===''?'Onbekend':esc(sourceValue(raw))+' g';
   }
-  try {if(job.legacy_profile&&job.mapping?.program_import_id===config.program_import_id)draw();else await preview();}catch(error){if(active())container.innerHTML=`<p class="notice error">${esc(error.message)}</p><p class="hint">De uploads blijven bewaard. Sluit dit venster en controleer de geselecteerde bestanden.</p>`;}
+  try {if(job.status==='confirmed'||(job.legacy_profile?.row_accounting&&job.mapping?.program_import_id===config.program_import_id))draw();else await preview();}catch(error){if(active())container.innerHTML=`<p class="notice error">${esc(error.message)}</p><p class="hint">De uploads blijven bewaard. Sluit dit venster en controleer de geselecteerde bestanden.</p>`;}
 }
 
 function legacyDate(value){if(!value)return 'Onbekend';const text=String(value);return /^\d{4}-\d{2}-\d{2}/.test(text)&&Number.isFinite(Date.parse(text))?date(text):esc(text)+' (niet gevalideerd)';}
@@ -2813,4 +2817,97 @@ function sourceReferenceText(value){
   if(Array.isArray(value))return value.map(sourceReferenceText).join(', ');
   if(typeof value==='object')return Object.entries(value).map(([key,item])=>(({job_ids:'Excelbronversies',day_ids:'Excel-dagregels',history_import_ids:'Werkboeken',source_checksums:'Bronchecksums'})[key]||key)+': '+sourceReferenceText(item)).join(' · ');
   return String(value);
+}
+
+function historySourceLabel(row) {
+  return row.source?.sheet && row.source?.row_number
+    ? `${row.source.sheet} · rij ${row.source.row_number}`
+    : `Rij ${row.row_number}`;
+}
+function historyRowTools({target,job,rows,selectedRows,finalized,isActive,onSelection,onPage}) {
+  const total=job.preview?.total??job.summary?.total_rows??rows.length;
+  const offset=job.preview?.offset||0,limit=job.preview?.limit||200;
+  const pages=Math.max(1,Math.ceil(total/limit)),page=Math.floor(offset/limit)+1;
+  const controls=document.createElement('section');controls.className='history-row-tools notice';
+  controls.innerHTML=`<p><strong>Alle ${fmt(total)} bronregels zijn opgenomen in dit controlevoorbeeld.</strong><br>Je ziet nu ${rows.length?fmt(offset+1):0}–${fmt(Math.min(offset+rows.length,total))} van ${fmt(total)} regels. Bladeren verbergt alleen regels op het scherm; het verwijdert niets.</p><div class="actions"><button type="button" data-page="first" ${offset?'':'disabled'}>Eerste</button><button type="button" data-page="previous" ${offset?'':'disabled'}>← Vorige</button><span>Pagina ${fmt(page)} van ${fmt(pages)}</span><button type="button" data-page="next" ${offset+limit<total?'':'disabled'}>Volgende →</button><button type="button" data-page="last" ${offset+limit<total?'':'disabled'}>Laatste</button></div><div class="history-page-fields"><label>Regels per pagina <select data-page-size>${[50,200,500].map(value=>`<option value="${value}" ${value===limit?'selected':''}>${value}</option>`).join('')}</select></label><label>Ga naar pagina <input data-page-number type="number" min="1" max="${pages}" step="1" value="${page}"></label><button type="button" data-page="go">Toon pagina</button></div>${!finalized&&user.role!=='lezer'?'<p class="history-selection-count" aria-live="polite"></p><div class="actions"><button type="button" data-selection="page">Selecteer deze pagina</button><button type="button" data-selection="clear">Selectie leegmaken</button></div>':''}`;
+  target.prepend(controls);
+  const go=async(nextOffset,nextLimit=limit)=>{
+    const buttons=$$('button,input,select',controls);buttons.forEach(element=>element.disabled=true);
+    try{await onPage(nextOffset,nextLimit);}catch(error){if(isActive()){toast(error.message);buttons.forEach(element=>element.disabled=false);}}
+  };
+  $$('[data-page]',controls).forEach(button=>button.onclick=()=>{
+    const value=button.dataset.page;
+    const requested=Number($('[data-page-number]',controls).value);
+    if(value==='go'&&(!Number.isInteger(requested)||requested<1||requested>pages)){toast(`Kies een pagina van 1 tot ${pages}.`);return;}
+    go(value==='first'?0:value==='previous'?Math.max(0,offset-limit):value==='next'?offset+limit:value==='last'?(pages-1)*limit:(requested-1)*limit);
+  });
+  $('[data-page-size]',controls).onchange=event=>go(0,+event.target.value);
+  if(finalized||user.role==='lezer')return;
+  const visibleRows=$$('.history-preview > table > tbody > tr',target);
+  const update=()=>{
+    $('.history-selection-count',controls).textContent=`${selectedRows.size.toLocaleString('nl-NL')} regels geselecteerd, ook op andere pagina’s. Gebruik hieronder dezelfde antwoorden voor deze selectie, of kies een groep over alle pagina’s.`;
+    onSelection();
+  };
+  visibleRows.forEach((element,index)=>{
+    const row=rows[index];if(!row)return;
+    const input=document.createElement('input');input.type='checkbox';input.dataset.historySelect=String(row.row_number);
+    input.setAttribute('aria-label',`Selecteer ${historySourceLabel(row)}`);input.checked=selectedRows.has(row.row_number);
+    input.onchange=()=>{if(input.checked)selectedRows.add(row.row_number);else selectedRows.delete(row.row_number);update();};
+    const label=document.createElement('label');label.className='inline';label.append(input,document.createTextNode(' Selecteren'));
+    element.firstElementChild.prepend(label,document.createElement('br'));
+  });
+  $('[data-selection="page"]',controls).onclick=()=>{rows.forEach(row=>selectedRows.add(row.row_number));$$('[data-history-select]',target).forEach(input=>input.checked=true);update();};
+  $('[data-selection="clear"]',controls).onclick=()=>{selectedRows.clear();$$('[data-history-select]',target).forEach(input=>input.checked=false);update();};
+  update();
+}
+function historyAccounting(job) {
+  const profile=job.legacy_profile||{},weight=profile.weight_summary||{},program=profile.program_summary||{};
+  const summary=job.summary||{},counts=profile.row_accounting||{};
+  const paired=counts.weight_source_rows??weight.bay_rows??summary.paired_weight_preview_rows;
+  const programRows=counts.program_source_rows??program.records??program.bay_rows;
+  const extra=counts.program_only_rows??summary.program_only_available;
+  const nonblank=counts.weighted_rows??summary.weighted_source_rows;
+  const blank=counts.unweighted_rows??summary.unweighted_source_rows;
+  return `<section class="notice" id="legacy-row-accounting">${job.status==='confirmed'&&!profile.row_accounting?'<p class="notice warn">Dit is een eerder bevestigd controlevoorbeeld. Open hieronder een nieuwe controle om eerder uitgesloten en aanvullende regels alsnog te beoordelen. De oorspronkelijke import blijft bewaard.</p>':''}<h3>Alle regels uit beide bestanden in beeld</h3><dl class="history-source-counts"><div><dt>Teeltschema in belichtingsbestand</dt><dd>${fmt(paired)} regels</dd></div><div><dt>Teeltprogramma</dt><dd>${fmt(programRows)} regels</dd></div><div><dt>Alleen in het Teeltprogramma</dt><dd>${fmt(extra)} aanvullende planningsregels</dd></div><div><dt>Teeltschema met / zonder gewicht</dt><dd>${fmt(nonblank)} / ${fmt(blank)} regels</dd></div></dl><p>Gekoppelde regels uit beide bestanden tellen één keer. Regels zonder gewicht en aanvullende planning blijven zichtbaar met hun eigen status. Je kiest zelf welke je meeneemt; ze krijgen geen verzonnen oogstgewicht.</p><p><strong>Controlevoorbeeld: ${fmt(summary.total_rows)} regels · ${fmt(summary.valid)} geldig · ${fmt(summary.ambiguous)} te beoordelen · ${fmt(summary.excluded)} uitgesloten.</strong></p></section>`;
+}
+function historyYearBulk(rounds) {
+  if(!rounds.length)return '';
+  return `<fieldset class="season-fields" id="legacy-year-bulk"><legend>Hetzelfde plantjaar voor meerdere rondes</legend><p class="hint">Selecteer de rondes die in hetzelfde ISO-plantjaar beginnen. Dit vult alleen de gekozen jaarvelden; controleer daarna het voorbeeld.</p><div class="form-grid"><div class="field"><label for="legacy-bulk-year">Gemeenschappelijk eerste ISO-plantjaar</label><input id="legacy-bulk-year" type="number" min="1900" max="2100" step="1" placeholder="Bijvoorbeeld 2024"></div><div class="field"><label for="legacy-bulk-year-rounds">Rondes voor dit plantjaar</label><select id="legacy-bulk-year-rounds" multiple size="5">${rounds.map(round=>`<option value="${esc(round)}">${esc(round)}</option>`).join('')}</select><small>Gebruik Ctrl/Cmd om meerdere rondes te kiezen, of selecteer ze hieronder allemaal.</small></div></div><label class="inline field"><input type="checkbox" id="legacy-bulk-year-empty" checked> Alleen lege jaarvelden invullen</label><div class="actions"><button type="button" id="legacy-year-select-all">Alle rondes selecteren</button><button type="button" id="legacy-year-fill">Jaar invullen bij geselecteerde rondes</button></div><p id="legacy-year-feedback" class="hint" aria-live="polite"></p></fieldset>`;
+}
+function bindHistoryYearBulk(dialog) {
+  const select=$('#legacy-bulk-year-rounds',dialog);if(!select)return;
+  $('#legacy-year-select-all',dialog).onclick=()=>{[...select.options].forEach(option=>option.selected=true);};
+  $('#legacy-year-fill',dialog).onclick=()=>{
+    const year=Number($('#legacy-bulk-year',dialog).value),rounds=new Set([...select.selectedOptions].map(option=>option.value));
+    if(!Number.isInteger(year)||year<1900||year>2100){toast('Vul een volledig ISO-plantjaar in.');return;}
+    if(!rounds.size){toast('Selecteer eerst de rondes waarvoor dit jaar geldt.');return;}
+    let count=0;const onlyEmpty=$('#legacy-bulk-year-empty',dialog).checked;
+    $$('[data-year-round]',dialog).forEach(input=>{if(rounds.has(input.dataset.yearRound)&&(!onlyEmpty||!input.value)){input.value=String(year);count++;}});
+    $('#legacy-year-feedback',dialog).textContent=`${count} jaarvelden ingevuld. Bevestig hieronder de plantjaren en controleer het voorbeeld opnieuw om ze vast te leggen.`;
+  };
+}
+
+function bindNewHistoryReview(target,id,isActive,dialog) {
+  const button=$('[data-history-new-review]',target);if(!button)return;
+  if(user.role==='lezer'){button.disabled=true;button.title='Je account heeft alleen leesrechten.';return;}
+  button.onclick=async()=>{
+    button.disabled=true;
+    try{
+      const detail=await api(`/api/history-imports/${id}/new-review`,{method:'POST',body:{}});
+      if(!isActive())return;
+      dialog.close();
+      if(detail.mapping?.profile==='legacy_paired')await legacyCompanyReview(detail.id,detail.mapping.program_import_id);
+      else await historyReview(detail.id);
+    }catch(error){if(isActive()){toast(error.message);button.disabled=false;}}
+  };
+}
+
+function historyReviewRequest(container,isActive) {
+  return async(path,options={})=>{
+    if(options.method!=='POST')return api(path,options);
+    const controls=$$('input,select,textarea,button',container).map(element=>[element,element.disabled]);
+    controls.forEach(([element])=>element.disabled=true);container.setAttribute('aria-busy','true');
+    try{return await api(path,options);}
+    finally{controls.forEach(([element,disabled])=>{if(element.isConnected)element.disabled=disabled});if(isActive()){container.removeAttribute('aria-busy');applyPermissions();}}
+  };
 }

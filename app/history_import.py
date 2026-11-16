@@ -111,11 +111,14 @@ class RowOverride(BaseModel):
     fields: dict[str, str | int | float | None] = Field(default_factory=dict)
     exclude: bool = False
     accept_anchor_mismatch: bool = False
+    include_planning: bool = False
+    confirm_program_round_title: bool = False
     reason: str = Field(default="", max_length=2000)
 
     @model_validator(mode="after")
     def validate_change(self):
-        if (self.fields or self.exclude or self.accept_anchor_mismatch) and len(self.reason.strip()) < 3:
+        if (self.fields or self.exclude or self.accept_anchor_mismatch or self.include_planning or
+                self.confirm_program_round_title) and len(self.reason.strip()) < 3:
             raise ValueError("correctie of uitsluiting vereist een reden")
         if set(self.fields) - ALLOWED:
             raise ValueError("onbekend correctieveld")
@@ -197,6 +200,70 @@ class LegacyPreviewInput(BaseModel):
         return self
 
 
+class BulkMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str | None = None
+    reason_contains: str | None = Field(default=None, max_length=200)
+    group_index: int | None = Field(default=None, ge=1, le=100)
+    source_sheet: str | None = Field(default=None, max_length=200)
+    round_name: str | None = Field(default=None, max_length=100)
+    variety: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def check(self):
+        if self.status not in (None, "valid", "ambiguous", "excluded", "duplicate"):
+            raise ValueError("ongeldige rijstatus")
+        if not any((self.status, self.reason_contains, self.group_index, self.source_sheet,
+                    self.round_name, self.variety)):
+            raise ValueError("selecteer minstens één concreet rijkenmerk")
+        return self
+
+
+class BulkReviewInput(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    expected_review_version_id: int = Field(ge=1)
+    row_numbers: list[int] | None = Field(default=None, max_length=10000)
+    all_matching: BulkMatch | None = None
+    fields: dict[str, str | int | float | None] = Field(default_factory=dict)
+    overwrite_existing: bool = False
+    exclude: bool | None = None
+    accept_anchor_mismatch: bool | None = None
+    include_planning: bool | None = None
+    confirm_program_round_title: bool | None = None
+    reason: str = Field(min_length=3, max_length=2000)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def check(self):
+        if (self.row_numbers is None) == (self.all_matching is None):
+            raise ValueError("kies rijnummers of één selectie over alle pagina's")
+        if self.row_numbers is not None and (not self.row_numbers or
+                len(self.row_numbers) != len(set(self.row_numbers)) or any(x < 1 for x in self.row_numbers)):
+            raise ValueError("rijnummers ontbreken, zijn dubbel of ongeldig")
+        if set(self.fields) - (ALLOWED - {"round_name", "bay_number"}):
+            raise ValueError("onbekend of ongeschikt bulkcorrectieveld")
+        if any(isinstance(value, str) and len(value) > 2000 for value in self.fields.values()):
+            raise ValueError("bulkcorrectieveld te groot")
+        if any(value in (None, "") for value in self.fields.values()):
+            raise ValueError("bulkcorrectie vereist een ingevulde waarde")
+        sensitive = set(self.fields) - {"beds", "density", "planned_stems"}
+        scoped = self.row_numbers is not None or (self.all_matching is not None and
+            (self.all_matching.group_index is not None or self.all_matching.round_name or
+             self.all_matching.variety or
+             bool(self.all_matching.source_sheet and
+                  re.fullmatch(r"Ronde\s+\d+", self.all_matching.source_sheet, re.I))))
+        if sensitive and not scoped:
+            raise ValueError("soort, datum of gewicht vereist expliciete rijnummers of één ronde")
+        if self.include_planning and self.all_matching and not self.all_matching.reason_contains:
+            raise ValueError("planning opnemen over alle pagina's vereist een redenfilter")
+        if not self.fields and self.exclude is None and self.accept_anchor_mismatch is None and \
+                self.include_planning is None and self.confirm_program_round_title is None:
+            raise ValueError("bulkactie ontbreekt")
+        if not self.reason.strip() or len(self.reason.strip()) < 3:
+            raise ValueError("bulkcontrole vereist een reden")
+        return self
+
+
 def _path(value: str) -> Path:
     path = Path(value)
     if path.is_absolute() or ".." in path.parts:
@@ -205,6 +272,8 @@ def _path(value: str) -> Path:
 
 
 def _begin_write_lock(db: Session):
+    if db.info.get("_history_bulk_lock"):
+        return
     if db.bind.dialect.name == "sqlite":
         try:
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -789,7 +858,7 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
             raise HTTPException(422, "rondejaar verwijst naar onbekende ronde")
     overrides = {o.row_number: o for o in data.overrides}
     previews = []
-    used_rounds = set()
+    paired_program_keys = set()
     seen_keys = set()
 
     def program_record(round_name, bay):
@@ -818,13 +887,13 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
         elif formula_weight and not (override and "weight_g" in override.fields):
             status = "ambiguous"
             reasons.append("eindgewicht is formule; bewaarde cache is niet geverifieerd")
-        elif omit:
+        elif omit and not (override and override.include_planning):
             status = "excluded"
-            reasons.append("geen eindgewicht; planning-only niet geselecteerd")
+            reasons.append("planning-only niet geselecteerd; geen eindgewicht")
         elif duplicate_program and not selected_program:
             status = "ambiguous"
             reasons.append("meerdere programmarijen voor dezelfde ronde en kap; kies bronrij met reden")
-        elif round_label_conflict and not manual_round:
+        elif round_label_conflict and not manual_round and not (override and override.confirm_program_round_title):
             status = "ambiguous"
             reasons.append("programmarondelabel in bron wijkt af van werkbladnaam")
         elif anchor_mismatch and not (override and override.accept_anchor_mismatch):
@@ -835,6 +904,10 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
                 reasons.append(f"dubbele programmarij handmatig gekozen: {data.program_record_selection_reason.strip()}")
             if round_label_conflict and manual_round:
                 reasons.append(f"afwijkend programmarondelabel handmatig gekoppeld: {data.group_round_reason.strip()}")
+            if round_label_conflict and override and override.confirm_program_round_title:
+                reasons.append(f"afwijkend programmarondelabel per bronrij gecontroleerd: {override.reason.strip()}")
+            if omit and override and override.include_planning:
+                reasons.append(f"planning zonder eindgewicht handmatig opgenomen: {override.reason.strip()}")
             if anchor_mismatch:
                 reasons.append(f"afwijkende programmakoppeling handmatig geaccepteerd: {override.reason.strip()}")
             if formula_weight:
@@ -880,11 +953,11 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
 
     for group, match in zip(weight["groups"], matches):
         round_name = match["matched_round"]
-        if round_name:
-            used_rounds.add(round_name)
         first_year = data.round_years.get(round_name) if round_name else None
         years = group_plant_years(group, first_year) if first_year else {}
         for row in group["rows"]:
+            if round_name:
+                paired_program_keys.add((round_name, row["bay_number"]))
             record, candidates, selected_record = program_record(round_name, row["bay_number"])
             duplicate_program = len(candidates) > 1
             label_conflict = any("round_label_conflict" in x.get("review_reasons", []) for x in candidates)
@@ -942,15 +1015,17 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
                           round_label_conflict=label_conflict or match["confidence"] == "round_label_conflict",
                           manual_round=str(group["group_index"]) in data.group_rounds)
 
-    program_only_available = sum(sum(len(records) for records in bays.values())
-                                 for name, bays in by_round.items() if name not in used_rounds)
-    if data.include_program_only_planning:
+    program_only_available = sum(len(records) for name, bays in by_round.items()
+                                 for bay, records in bays.items()
+                                 if (name, bay) not in paired_program_keys)
+    if program_only_available:  # Keep unmatched source records visible even when excluded.
         for round_name, bays in by_round.items():
-            if round_name in used_rounds:
-                continue
             year = data.round_years.get(round_name)
-            ordered = sorted((record for records in bays.values() for record in records),
+            ordered = sorted((record for bay, records in bays.items()
+                              if (round_name, bay) not in paired_program_keys for record in records),
                              key=lambda x: (x["bay_number"], x["row_number"]))
+            if not ordered:
+                continue
             program_group = {"rows": [{"row_number": r["row_number"],
                                        "plant_week": r["plant_week"]} for r in ordered]}
             years = group_plant_years(program_group, year) if year else {}
@@ -993,6 +1068,7 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
                                                "weekday_convention": data.weekday_convention,
                                                "light_out_from_literal_ld_days": ld is not None}},
                               values, source, planning_only=True,
+                              omit=not data.include_program_only_planning,
                               duplicate_program=duplicate_program,
                               selected_program=chosen is record,
                               round_label_conflict=label_conflict,
@@ -1009,11 +1085,23 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
                     "duplicate": counts["duplicate"],
                     "weighted_source_rows": weight["summary"]["weight_rows"],
                     "unweighted_source_rows": weight["summary"]["unweighted_rows"],
-                    "program_only_available": program_only_available}
+                    "program_only_available": program_only_available,
+                    "program_only_preview_rows": program_only_available,
+                    "paired_weight_preview_rows": weight["summary"]["bay_rows"]}
+    row_accounting = {"weight_source_rows": weight["summary"]["bay_rows"],
+                      "program_source_rows": len(program["records"]),
+                      "paired_program_rows": len(program["records"]) - program_only_available,
+                      "program_only_rows": program_only_available,
+                      "weighted_rows": weight["summary"]["weight_rows"],
+                      "unweighted_rows": weight["summary"]["unweighted_rows"],
+                      "formula_weight_rows": weight["summary"]["formula_weight_rows"],
+                      "preview_rows": len(previews), "excluded_rows": counts["excluded"],
+                      "ambiguous_rows": counts["ambiguous"], "valid_rows": counts["valid"]}
     legacy_profile = {"matches": matches, "program_rounds": sorted(known_rounds,
         key=lambda name: int(name.split()[-1])), "program_summary": program["summary"],
         "weight_summary": weight["summary"], "round_years": data.round_years,
-        "weekday_convention": data.weekday_convention}
+        "weekday_convention": data.weekday_convention,
+        "row_accounting": row_accounting}
     item.mapping = {**data.model_dump(mode="json"), "sheet": "teeltschema",
                     "profile": "legacy_paired", "program_sha256": companion.sha256,
                     "legacy_profile": legacy_profile}
@@ -1027,6 +1115,200 @@ def legacy_preview(import_id: int, data: LegacyPreviewInput, db: Session = Depen
            "summary": item.summary, "round_years": data.round_years})
     db.commit()
     return _detail(db, item)
+
+
+def _bulk_matches(row: HistoryPreviewRow, match: BulkMatch) -> bool:
+    if match.status and row.status != match.status:
+        return False
+    if match.reason_contains and not any(match.reason_contains.casefold() in str(reason).casefold()
+                                         for reason in row.reasons):
+        return False
+    if match.group_index is not None and (row.original or {}).get("group_index") != match.group_index:
+        return False
+    if match.source_sheet and (row.source or {}).get("sheet", "").casefold() != match.source_sheet.casefold():
+        return False
+    if match.round_name and str((row.effective or {}).get("round_name") or "").casefold() != match.round_name.casefold():
+        return False
+    if match.variety and str((row.effective or {}).get("variety") or "").casefold() != match.variety.casefold():
+        return False
+    return True
+
+
+@router.get("/api/history-imports/{import_id}/review-groups")
+def history_review_groups(import_id: int, db: Session = Depends(get_db),
+                          user: User = Depends(require_user)):
+    from collections import Counter
+    item = db.get(HistoryImport, import_id)
+    if not item:
+        raise HTTPException(404, "import niet gevonden")
+    rows = db.scalars(select(HistoryPreviewRow).where(HistoryPreviewRow.import_id == import_id)).all()
+    latest = db.scalar(select(HistoryReviewVersion.id).where(HistoryReviewVersion.import_id == import_id)
+                       .order_by(HistoryReviewVersion.id.desc()).limit(1))
+    return {"review_version_id": latest, "total_rows": len(rows),
+            "statuses": dict(Counter(row.status for row in rows)),
+            "reasons": [{"reason": reason, "count": count} for reason, count in
+                        Counter(str(reason) for row in rows for reason in row.reasons).most_common(100)],
+            "source_sheets": dict(Counter((row.source or {}).get("sheet") or "onbekend" for row in rows)),
+            "groups": dict(Counter(str(row.original["group_index"]) for row in rows
+                                   if row.original and row.original.get("group_index") is not None)),
+            "rounds": dict(Counter(str(row.effective.get("round_name")) for row in rows
+                                   if row.effective and row.effective.get("round_name"))),
+            "varieties": dict(Counter(str(row.effective.get("variety")) for row in rows
+                                      if row.effective and row.effective.get("variety")))}
+
+
+@router.post("/api/history-imports/{import_id}/bulk-review")
+def bulk_review(import_id: int, data: BulkReviewInput, db: Session = Depends(get_db),
+                user: User = Depends(require_write)):
+    """Apply one reasoned rule to selected staged rows, then rebuild the preview.
+
+    The current review version prevents applying a selection from an obsolete
+    preview. All source evidence and canonical validation run again.
+    """
+    from collections import Counter
+    _begin_write_lock(db)
+    item = db.get(HistoryImport, import_id)
+    if not item:
+        raise HTTPException(404, "import niet gevonden")
+    if item.status != "preview_ready" or not item.mapping:
+        raise HTTPException(409, "alleen een onbevestigd controlevoorbeeld kan worden bewerkt")
+    latest = db.scalar(select(HistoryReviewVersion.id).where(HistoryReviewVersion.import_id == import_id)
+                       .order_by(HistoryReviewVersion.id.desc()).limit(1))
+    if latest != data.expected_review_version_id:
+        raise HTTPException(409, "controlevoorbeeld is gewijzigd; laad de nieuwste versie")
+    rows = db.scalars(select(HistoryPreviewRow).where(HistoryPreviewRow.import_id == import_id)
+                      .order_by(HistoryPreviewRow.row_number)).all()
+    by_number = {row.row_number: row for row in rows}
+    if data.row_numbers is not None:
+        missing = set(data.row_numbers) - set(by_number)
+        if missing:
+            raise HTTPException(422, "selectie bevat rijnummers die niet in het controlevoorbeeld staan")
+        selected = [by_number[number] for number in data.row_numbers]
+    else:
+        selected = [row for row in rows if _bulk_matches(row, data.all_matching)]
+    if not selected:
+        raise HTTPException(422, "geen rijen voldoen aan deze selectie")
+    legacy = item.mapping.get("profile") == "legacy_paired"
+    if (data.accept_anchor_mismatch is not None or data.include_planning is not None or
+            data.confirm_program_round_title is not None) and not legacy:
+        raise HTTPException(422, "deze correctie hoort alleen bij gekoppelde historische werkboeken")
+    previous = {override["row_number"]: RowOverride.model_validate(override)
+                for override in item.mapping.get("overrides", [])}
+    changed = {}
+    skipped = Counter()
+    for row in selected:
+        if row.status == "duplicate":
+            skipped["already_confirmed"] += 1
+            continue
+        before = previous.get(row.row_number)
+        override = before.model_copy(deep=True) if before else RowOverride(row_number=row.row_number)
+        touched = False
+        for field, value in data.fields.items():
+            current = (row.effective or {}).get(field)
+            if current == value:
+                continue
+            if current not in (None, "") and not data.overwrite_existing:
+                skipped["existing_value_preserved"] += 1
+                continue
+            override.fields[field] = value
+            touched = True
+        if data.exclude is not None and override.exclude != data.exclude:
+            override.exclude = data.exclude
+            touched = True
+        if data.accept_anchor_mismatch is not None:
+            if not (row.original or {}).get("anchor_mismatch"):
+                skipped["no_anchor_mismatch"] += 1
+            elif override.accept_anchor_mismatch != data.accept_anchor_mismatch:
+                override.accept_anchor_mismatch = data.accept_anchor_mismatch
+                touched = True
+        if data.include_planning is not None:
+            if not any("planning-only niet geselecteerd" in str(reason) for reason in row.reasons) and \
+                    not (before and before.include_planning):
+                skipped["not_planning_only"] += 1
+            elif override.include_planning != data.include_planning:
+                override.include_planning = data.include_planning
+                touched = True
+        if data.confirm_program_round_title is not None:
+            if not (row.original or {}).get("round_label_conflict") and not any(
+                    "round_label_conflict" in str(reason) for reason in
+                    (row.original or {}).get("program_review_reasons", [])):
+                skipped["no_round_title_conflict"] += 1
+            elif override.confirm_program_round_title != data.confirm_program_round_title:
+                override.confirm_program_round_title = data.confirm_program_round_title
+                touched = True
+        if not touched:
+            skipped["no_change"] += 1
+            continue
+        note = data.reason.strip()
+        override.reason = (before.reason.strip() + " | " + note) if before and before.reason.strip() else note
+        if len(override.reason) > 2000:
+            raise HTTPException(422, "samengevoegde correctiereden wordt te lang")
+        changed[row.row_number] = RowOverride.model_validate(override.model_dump(mode="json"))
+    result = {"matched_rows": len(selected), "changed_rows": len(changed),
+              "row_numbers": sorted(changed), "sample_row_numbers": sorted(changed)[:30],
+              "skipped": dict(skipped), "review_version_id": latest}
+    if data.dry_run:
+        db.rollback()
+        return {"bulk_review": result}
+    if not changed:
+        raise HTTPException(409, "geen rijen hoeven te worden gewijzigd")
+    previous.update(changed)
+    mapping = {name: item.mapping[name] for name in
+               (LegacyPreviewInput.model_fields if legacy else MappingInput.model_fields)
+               if name in item.mapping}
+    mapping["overrides"] = [override.model_dump(mode="json") for override in
+                            sorted(previous.values(), key=lambda value: value.row_number)]
+    try:
+        db.info["_history_bulk_lock"] = True
+        if legacy:
+            detail = legacy_preview(import_id, LegacyPreviewInput.model_validate(mapping), db, user)
+        else:
+            detail = map_history(import_id, MappingInput.model_validate(mapping), db, user)
+    finally:
+        db.info.pop("_history_bulk_lock", None)
+    detail["bulk_review"] = {**result, "review_version_id": detail["reviews"][-1]["id"]}
+    return detail
+
+
+@router.post("/api/history-imports/{import_id}/new-review")
+def new_history_review(import_id: int, db: Session = Depends(get_db),
+                       user: User = Depends(require_write)):
+    """Reopen the same immutable evidence in a new review, preserving the old import.
+
+    Previously confirmed source rows are recognized as duplicates by the usual
+    preview logic. Previously excluded rows may be reviewed without another
+    upload or any duplicate crop creation.
+    """
+    _begin_write_lock(db)
+    original = db.get(HistoryImport, import_id)
+    if not original:
+        raise HTTPException(404, "import niet gevonden")
+    if original.status != "confirmed" or not original.mapping:
+        raise HTTPException(409, "alleen een bevestigde import kan een nieuwe controle krijgen")
+    legacy = original.mapping.get("profile") == "legacy_paired"
+    mapping = {name: original.mapping[name] for name in
+               (LegacyPreviewInput.model_fields if legacy else MappingInput.model_fields)
+               if name in original.mapping}
+    reopened = HistoryImport(filename=original.filename, sha256=original.sha256,
+                             raw_path=original.raw_path, profile=original.profile,
+                             status="uploaded", user_id=user.id)
+    db.add(reopened)
+    db.flush()
+    try:
+        db.info["_history_bulk_lock"] = True
+        audit(db, user, "history.new_review", reopened.id,
+              {"source_import_id": original.id, "sha256": original.sha256})
+        if legacy:
+            detail = legacy_preview(reopened.id, LegacyPreviewInput.model_validate(mapping), db, user)
+        else:
+            detail = map_history(reopened.id, MappingInput.model_validate(mapping), db, user)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.info.pop("_history_bulk_lock", None)
+    detail["new_review"] = {"cloned_from_import_id": original.id}
+    return detail
 
 
 @router.post("/api/history-imports/{import_id}/confirm")

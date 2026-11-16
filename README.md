@@ -16,8 +16,8 @@ DATA_DIR=./data uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 Open `http://127.0.0.1:8000` en maak de eerste beheerder aan met een wachtwoord van minimaal twaalf tekens. Er zijn geen standaardaccounts, wachtwoorden of fictieve teelten. Database-migratie en de 40 kappen worden automatisch geïnitialiseerd. Voor lokale OCR zijn Tesseract met de taalpakketten Nederlands/Engels en libzbar nodig; de container bevat die. Zonder OCR blijft handmatige scanreview beschikbaar.
 
 ```bash
-docker build -t gewichtsverwachting:0.2.1 .
-docker run --rm -p 8000:8000 -e DATA_DIR=/data -v chrysant-data:/data gewichtsverwachting:0.2.1
+docker build -t gewichtsverwachting:0.2.2 .
+docker run --rm -p 8000:8000 -e DATA_DIR=/data -v chrysant-data:/data gewichtsverwachting:0.2.2
 ```
 
 Bij een bedrijfsproxy met een eigen vertrouwde CA kan de bouw optioneel `--secret id=build_ca,src=/pad/naar/ca-bundle.pem` gebruiken. Certificaatcontrole blijft ingeschakeld; de CA wordt niet in de image opgeslagen.

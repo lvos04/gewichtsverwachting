@@ -1,6 +1,6 @@
 # TrueNAS SCALE Custom App
 
-Gebruik een versiegetagde image uit de geslaagde GitHub Actions-publicatie, bijvoorbeeld `ghcr.io/lvos04/gewichtsverwachting:v0.2.1`. Gebruik pas een tag die daadwerkelijk gepubliceerd is. De app is in een Linux-container getest; een installatie op de eigen TrueNAS-server blijft een afzonderlijke gebruikerstest.
+Gebruik een versiegetagde image uit de geslaagde GitHub Actions-publicatie, bijvoorbeeld `ghcr.io/lvos04/gewichtsverwachting:v0.2.2`. Gebruik pas een tag die daadwerkelijk gepubliceerd is. De app is in een Linux-container getest; een installatie op de eigen TrueNAS-server blijft een afzonderlijke gebruikerstest.
 
 1. Maak een dataset, bijvoorbeeld `/mnt/tank/apps/chrysant`. Geef de containergebruiker UID/GID **568:568** lees- en schrijfrechten via de TrueNAS ACL-editor. Gebruik geen algemene wereldschrijfrechten.
 2. Open **Apps → Discover → Custom App** en vul de applicatienaam `gewichtsverwachting` in.
@@ -28,7 +28,7 @@ Een alternatief is Tailscale met HTTPS-toegang op het privénetwerk. PWA en offl
 
 ## Update vanaf 0.1.1
 
-Maak en download eerst een back-up. Zet de imagetag vervolgens op `v0.2.1` en behoud dezelfde datasetmount op `/data`, poort en UID/GID568. De app maakt vóór schema-upgrade zelf een consistente back-up en bewaart bestaande teelten, metingen, planning, accounts, bronnen en modellen. Schema0002 voegt profiel-/reviewtabellen en nieuwe optionele planningsvelden toe. Schema0003 voegt de specifieke werkboekprofielen en aanvullende Excel-belichting toe.
+Maak en download eerst een back-up. Zet de imagetag vervolgens op `v0.2.2` en behoud dezelfde datasetmount op `/data`, poort en UID/GID568. De app maakt vóór schema-upgrade zelf een consistente back-up en bewaart bestaande teelten, metingen, planning, accounts, bronnen en modellen. Schema0002 voegt profiel-/reviewtabellen en nieuwe optionele planningsvelden toe. Schema0003 voegt de specifieke werkboekprofielen en aanvullende Excel-belichting toe.
 
 Alleen de actuele toestand van oude koppelingen en doelgewichten kan bij de migratie worden vastgelegd. Eerdere historische kennis wordt niet geraden. Een historische terugtest kan daarom bij zulke vroege peilmomenten onbekende bronnen of doelen melden. Nieuwe versiegeschiedenis groeit vanaf de upgrade.
 

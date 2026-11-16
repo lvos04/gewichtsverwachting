@@ -111,7 +111,7 @@ async def lifespan(app):
     legacy_lighting.shutdown_worker()
     importer.shutdown_worker()
 
-app = FastAPI(title='Gewichtsverwachting chrysant', version='0.2.1', lifespan=lifespan,
+app = FastAPI(title='Gewichtsverwachting chrysant', version='0.2.2', lifespan=lifespan,
               docs_url=None if os.environ.get('DISABLE_API_DOCS') == '1' else '/docs')
 
 app.add_middleware(importer.ImportUploadLimitMiddleware)
@@ -154,7 +154,7 @@ app.include_router(legacy_lighting.router)
 def health():
     with engine.connect() as connection:
         connection.execute(text('SELECT 1'))
-    return {'status': 'ok', 'version': '0.2.1'}
+    return {'status': 'ok', 'version': '0.2.2'}
 
 @app.get('/sw.js', include_in_schema=False)
 def service_worker():

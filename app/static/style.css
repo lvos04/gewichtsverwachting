@@ -1095,3 +1095,13 @@ progress {
 .guide-tips li {
   margin-bottom: 9px;
 }
+.history-row-tools p { margin: 0 0 12px; }
+.history-row-tools .actions { align-items: center; }
+.history-page-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
+.history-page-fields label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.history-page-fields input, .history-page-fields select { width: 120px; }
+.history-source-counts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin: 0 0 15px; }
+.history-source-counts dt { font-size: 12px; color: var(--muted); }
+.history-source-counts dd { margin: 3px 0 0; font-weight: 650; }
+.history-bulk-host { margin: 18px 0; }
+@media(max-width:720px) { .history-source-counts { grid-template-columns: 1fr; } .history-page-fields { gap: 8px; } }
