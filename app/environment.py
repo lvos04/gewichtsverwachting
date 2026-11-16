@@ -159,6 +159,47 @@ def _aggregate(days,daily,metric,min_coverage):
     return (number if count/expected>=min_coverage else None),coverage
 
 
+def _merge_bridge(db,result,daily,days,bay_number,settings,cutoff,quality):
+    """Dagwaarden uit de Priva Bridge-cache, zoals bekend op de peildatum.
+
+    Alleen actief als de Bridge-instelling op de peildatum aan stond. Per dag en kenmerk
+    beslist de ingestelde voorrang; een ontbrekende of onvolledige Bridge-dag valt terug op
+    de eigen import en wordt nooit als 0 geteld.
+    """
+    from . import bridge
+    voorrang=settings.bridge_voorrang
+    scope=f'kap:{bay_number}'
+    rows,truncated=bridge.cached_rows(db,[scope],days[0],days[-1],metrics=list(bridge.MODEL_METRICS),cutoff=cutoff)
+    used=dict(lamp_light=[],temperature=[],rh=[])
+    own_used=dict(lamp_light=0,temperature=0,rh=0)
+    import_ids=set(); row_ids=[]
+    for day in days:
+        seconds=(_midnight(day+timedelta(days=1))-_midnight(day)).total_seconds()
+        for metric,(feature,*_rest) in bridge.MODEL_METRICS.items():
+            row=rows.get((scope,day.isoformat(),metric))
+            value=bridge.usable_model_value(row,voorrang)
+            if row is not None and value is None and row.value is not None:
+                quality['bridge_rows_not_usable']+=1
+            chosen=bridge.choose(feature in daily.get(day,{}),value,voorrang)
+            if chosen=='bridge':
+                daily[day][feature]=dict(value=value,seconds=seconds,source='bridge')
+                used[feature].append(day.isoformat()); row_ids.append(row.id)
+                if row.import_id:
+                    import_ids.add(row.import_id)
+            elif chosen=='eigen_import':
+                own_used[feature]+=1
+    if used['lamp_light']:
+        bridged=set(used['lamp_light'])
+        result['supplemental_lighting']['used_days']=[d for d in result['supplemental_lighting']['used_days'] if d['date'] not in bridged]
+    if truncated:
+        result['truncated']=True
+    result['configuration']['bridge']=dict(voorrang=voorrang,scope=scope)
+    result['bridge']=dict(voorrang=voorrang,scope=scope,days_from_bridge={k:len(v) for k,v in used.items()},
+        days_from_own_import=own_used,dates_from_bridge=used,import_ids=sorted(import_ids),
+        cache_row_ids_sha256=hashlib.sha256(json.dumps(sorted(row_ids),separators=(',',':')).encode()).hexdigest(),
+        cache_row_count=len(row_ids))
+
+
 def environment_snapshot(db:Session,cultivation,plan,as_of:datetime,m1=None,m2=None,
                          profile='basic',min_coverage=1.0,include_daylight_estimate=False,
                          include_co2=False,observed_until:datetime|None=None) -> dict:
@@ -366,6 +407,8 @@ def environment_snapshot(db:Session,cultivation,plan,as_of:datetime,m1=None,m2=N
                     if answer['mol_m2_day'] is not None:
                         daily[day]['daylight_estimate']=dict(value=answer['mol_m2_day'],seconds=seconds)
                         mark(calibration_ids=[transmission.id,unit_id])
+    if getattr(settings,'bridge_enabled',False) and days:
+        _merge_bridge(db,result,daily,days,cultivation.bay_number,settings,cutoff,quality)
     used_excel=result['supplemental_lighting']['used_days']
     result['source_ids']['legacy_lighting'] = {plural:sorted({row[single] for row in used_excel})
         for single,plural in (('legacy_lighting_job_id','job_ids'),('legacy_lighting_day_id','day_ids'),

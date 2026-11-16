@@ -531,6 +531,21 @@ def run():
                 page.locator('#koppeling-aan').check()
                 expect(page.locator('#koppelsleutels')).to_contain_text('beantwoordt verzoeken')
                 assert page.request.get(base+'/api/koppeling/status').json()=={'ingeschakeld':True}
+                # Priva Bridge: standaard uit; token wordt nooit teruggetoond; een openbaar adres wordt geweigerd.
+                bridge_panel = page.locator('#bridge-panel')
+                expect(bridge_panel).to_contain_text('Klimaat- en lichtdata uit Priva Bridge')
+                expect(bridge_panel.locator('input[name=enabled]')).not_to_be_checked()
+                expect(page.locator('#bridge-sync')).to_be_disabled()
+                page.locator('#bridge_token').fill('synthetic-bridge-token-123')
+                page.get_by_role('button', name='Token bewaren').click()
+                expect(bridge_panel).to_contain_text('versleuteld bewaard en nooit teruggetoond')
+                expect(page.locator('#bridge_token')).to_have_value('')
+                assert 'synthetic-bridge-token-123' not in page.request.get(base+'/api/bridge/status').text()
+                page.locator('#bridge_url').fill('https://bridge.example.com')
+                bridge_panel.locator('input[name=enabled]').check()
+                page.get_by_role('button', name='Bridge-instellingen bewaren').click()
+                expect(bridge_panel.locator('#bridge-form .error-text')).to_contain_text('interne netwerk')
+                assert page.request.get(base+'/api/bridge/status').json()['enabled'] is False
                 page.locator('#mfa-start').click()
                 secret=page.locator('#mfa-panel code').inner_text().strip()
                 sys.path.insert(0, str(ROOT))

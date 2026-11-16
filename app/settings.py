@@ -49,6 +49,26 @@ class AppSettings(BaseModel):
     priority_belichting: int = Field(default=40, ge=0, le=100)
     priority_kranen: int = Field(default=40, ge=0, le=100)
     priority_algemeen_afdeling: int = Field(default=20, ge=0, le=100)
+    # Priva Bridge (standaard uit = alleen de eigen CSV-import). Het token staat niet hier
+    # maar versleuteld in bridge_credentials; zie app/bridge.py en docs/PRIVA_BRIDGE.md.
+    bridge_enabled: bool = False
+    bridge_url: str = Field(default='', max_length=300)
+    bridge_ca_pem: str = Field(default='', max_length=20000)
+    bridge_voorrang: Literal['bridge_ok_verdacht', 'bridge_alleen_ok', 'eigen_import_eerst'] = 'bridge_ok_verdacht'
+    bridge_sync_hour: int = Field(default=6, ge=0, le=23)
+    bridge_sync_days: int = Field(default=14, ge=1, le=400)
+
+    @field_validator('bridge_url')
+    @classmethod
+    def internal_bridge_url(cls, value):
+        from .bridge import validate_url
+        return validate_url(value)
+
+    @field_validator('bridge_ca_pem')
+    @classmethod
+    def bridge_ca(cls, value):
+        from .bridge import validate_ca
+        return validate_ca(value)
 
 class SettingsVersion(Base):
     __tablename__ = 'settings_versions'

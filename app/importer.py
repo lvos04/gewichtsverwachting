@@ -879,7 +879,13 @@ def climate(start:date|None=None,end:date|None=None,bay_number:int|None=None,use
         if unknown_dates: counts['mapping_uncertain_days']=len(unknown_dates)
         if bay_number is None:
             counts['missing_departments']=len({1,2,3,4}-departments)
-        return dict(start=start,end=end,bay_number=bay_number,series=list(series.values()),quality=dict(counts),mapping_uncertain=bool(unknown_dates) or bool(bay_number and not mappings),
+        result=dict(start=start,end=end,bay_number=bay_number,series=list(series.values()),quality=dict(counts),mapping_uncertain=bool(unknown_dates) or bool(bay_number and not mappings),
                     conflicts=conflicts,truncated=truncated,**policy,sources=[dict(id=s.id,profile=s.profile,version=s.version,checksum=s.checksum) for s in sources],
                     derived=derive_daily_light([item for item,_ in grouped.values()],mappings,calibrations,start,end,bay_number,truncated),
                     date_basis='Werkelijke kalenderdatum Europe/Amsterdam; geen koppeling via weeknummer.')
+        # Optionele Priva Bridge (standaard uit): voegt alleen iets toe als de instelling aan staat.
+        from .bridge import apply_to_climate
+        own={(item.local_date,feature) for item,_ in grouped.values() for label,feature in (('Ave_24h_CompTemp','temperature'),('Ave_24h_CompRV','rh'))
+             if item.label==label and item.object_type=='department' and item.value is not None and not item.subtype}
+        apply_to_climate(db,result,start=start,end=end,bay_number=bay_number,own=own)
+        return result

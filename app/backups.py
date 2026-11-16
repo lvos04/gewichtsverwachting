@@ -12,7 +12,8 @@ import zipfile
 from datetime import datetime, timezone
 from .db import DATA_DIR, engine
 
-EXCLUDED_DIRS = {'backups', 'tmp', '__pycache__'}
+# 'secrets' bevat de sleutel van het Bridge-token; een back-up bevat zo nooit een bruikbaar token.
+EXCLUDED_DIRS = {'backups', 'tmp', '__pycache__', 'secrets'}
 
 def _digest(path: Path) -> str:
     h = hashlib.sha256()

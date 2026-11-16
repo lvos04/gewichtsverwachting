@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from . import __version__, auth, core, koppeling, mfa, onderhoud, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
+from . import __version__, auth, core, koppeling, mfa, onderhoud, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting, bridge
 from .backups import create_backup
 from .db import DATA_DIR, SessionLocal, engine
 
@@ -50,6 +50,11 @@ async def daily_backups():
             await asyncio.to_thread(onderhoud.daily_cleanup)
         except Exception:
             log.exception('Dagelijkse opschoning mislukt')
+        try:
+            # Doet niets zolang "Klimaat- en lichtdata uit Priva Bridge" uit staat.
+            await asyncio.to_thread(bridge.maybe_daily_sync)
+        except Exception:
+            log.exception('Dagelijkse Priva Bridge-synchronisatie mislukt')
         with SessionLocal() as db:
             config = settings.effective_settings(db)
         latest = max((p.stat().st_mtime for p in (DATA_DIR / 'backups').glob('*.zip')), default=0)
@@ -117,6 +122,7 @@ app.include_router(environment.router)
 app.include_router(history_import.router)
 app.include_router(insights.router)
 app.include_router(legacy_lighting.router)
+app.include_router(bridge.router)
 koppeling.install(app)
 
 @app.get('/health', include_in_schema=False)

@@ -13,3 +13,5 @@ qrcode==8.2
 pyzbar==0.1.9
 openpyxl==3.1.5
 defusedxml==0.7.1
+# Server-side ophalen bij de Priva Bridge (app/bridge.py)
+httpx==0.28.1

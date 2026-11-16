@@ -1,6 +1,6 @@
 from alembic import context
 from app.db import Base, engine
-from app import models, importer, forecast, operations, settings, crop_profiles, environment, history_import, legacy_lighting, koppeling  # register all tables
+from app import models, importer, forecast, operations, settings, crop_profiles, environment, history_import, legacy_lighting, koppeling, bridge  # register all tables
 
 config = context.config
 target_metadata = Base.metadata

@@ -224,3 +224,73 @@ def test_pre_02_artifact_keeps_legacy_profile_and_remains_loadable(db, tmp_path,
     assert result['feature_profile']=='basic'
     assert result['features_used']['stage_daylength_hours']==pytest.approx(result['season']['daylength_hours'])
     assert fc.model_spec(legacy)['anchor']=='legacy_asof'
+
+
+def _bridge_on(db, at, voorrang='bridge_ok_verdacht'):
+    from app.bridge import BridgeDailyValue, BridgeSync
+    db.add(SettingsVersion(settings=AppSettings(bridge_enabled=True, bridge_url='http://10.0.0.5:8000',
+        bridge_voorrang=voorrang).model_dump(), effective_from=datetime(2000, 1, 1),
+        created_at=datetime(2000, 1, 1), reason='Bridge aan (synthetisch)'))
+    sync = BridgeSync(trigger='handmatig', status='ok', started_at=at(9)); db.add(sync); db.flush()
+    for day in range(10):
+        quality = 'onvolledig' if day == 3 else ('verdacht' if day == 4 else 'ok')
+        db.add(BridgeDailyValue(sync_id=sync.id, scope='kap:1', local_date=at(day).date().isoformat(),
+            metric='lichtsom_lampen_kap', value=5.0, unit='mol/m²/dag', coverage=1.0 if day != 3 else 0.5,
+            quality=quality, resolved_from='kap:1', sources_json='[]', import_id='imp_1', revision=1,
+            fetched_at=at(9)))
+    db.commit()
+
+
+def test_bridge_switch_off_leaves_environment_unchanged(db):
+    from app.bridge import BridgeDailyValue, BridgeSync
+    crop, at = add_cultivation(db, 1)
+    _source_environment(db, crop, at)
+    before = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    sync = BridgeSync(trigger='handmatig', status='ok', started_at=at(9)); db.add(sync); db.flush()
+    db.add(BridgeDailyValue(sync_id=sync.id, scope='kap:1', local_date=at(1).date().isoformat(),
+        metric='lichtsom_lampen_kap', value=99.0, unit='mol/m²/dag', coverage=1.0, quality='ok',
+        sources_json='[]', fetched_at=at(9)))
+    db.commit()
+    after = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    assert after == before and 'bridge' not in after['environment']
+
+
+def test_bridge_precedence_by_quality_and_fallback_to_own_import(db):
+    crop, at = add_cultivation(db, 1)
+    _source_environment(db, crop, at)
+    _bridge_on(db, at)
+    snap = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    # 9 Bridge-dagen à 5,0 (ok/verdacht) + dag 3 onvolledig → eigen import 4,32
+    assert snap['features']['env_lamp_light_mol_m2'] == pytest.approx(9 * 5.0 + 4.32)
+    info = snap['environment']['bridge']
+    assert info['days_from_bridge']['lamp_light'] == 9 and info['days_from_own_import']['lamp_light'] == 1
+    assert info['import_ids'] == ['imp_1']
+    # Rows fetched after the cutoff are not known yet: point-in-time reproducible.
+    from app.bridge import BridgeDailyValue
+    for row in db.scalars(select(BridgeDailyValue)):
+        row.fetched_at = at(25)
+    db.commit()
+    later = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    assert later['features']['env_lamp_light_mol_m2'] == pytest.approx(43.2)
+    assert later['environment']['bridge']['days_from_bridge']['lamp_light'] == 0
+
+
+def test_bridge_own_import_first_only_fills_gaps(db):
+    crop, at = add_cultivation(db, 1)
+    _source_environment(db, crop, at)
+    _bridge_on(db, at, voorrang='eigen_import_eerst')
+    snap = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    assert snap['features']['env_lamp_light_mol_m2'] == pytest.approx(43.2)
+    assert snap['environment']['bridge']['days_from_bridge']['lamp_light'] == 0
+
+
+def test_bridge_fills_days_without_own_import_but_missing_stays_missing(db):
+    from app.bridge import BridgeDailyValue
+    crop, at = add_cultivation(db, 1)
+    _bridge_on(db, at)  # geen eigen import en geen koppelingen
+    snap = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    assert snap is None  # dag 3 onvolledig en geen eigen import: geen volledige dekking, nooit als 0
+    row = db.scalar(select(BridgeDailyValue).where(BridgeDailyValue.quality == 'onvolledig'))
+    row.quality = 'ok'; db.commit()
+    snap = fc.feature_snapshot(db, crop, 'KD10', at(20), spec=_spec('light'))
+    assert snap['features']['env_lamp_light_mol_m2'] == pytest.approx(50.0)
