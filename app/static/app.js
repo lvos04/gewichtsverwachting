@@ -31,6 +31,17 @@ const localNow = () =>
     .replace(" ", "T")
     .slice(0, 16);
 const json = (v) => `<pre>${esc(JSON.stringify(v, null, 2))}</pre>`;
+// getRandomValues remains available on a trusted LAN over HTTP, where
+// randomUUID and service workers can require HTTPS. Keep UUIDv4 retry IDs valid.
+function newClientId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+
 let user = null,
   cultivations = [],
   varieties = [],
@@ -888,7 +899,7 @@ async function measure() {
     )
       return;
     const body = {
-      client_id: crypto.randomUUID(),
+      client_id: newClientId(),
       cultivation_id: +d.cultivation_id,
       kind: d.kind,
       measured_at: d.measured_at,

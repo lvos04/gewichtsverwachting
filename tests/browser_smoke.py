@@ -43,6 +43,8 @@ def run():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
                 ctx = browser.new_context(viewport={'width': 390, 'height': 844}, timezone_id='Europe/Amsterdam', locale='nl-NL')
+                # Simulate LAN HTTP: randomUUID is unavailable; cryptographic UUID fallback must work.
+                ctx.add_init_script("Object.defineProperty(window.crypto, 'randomUUID', {value: undefined, configurable: true})")
                 page = ctx.new_page()
                 errors = []
                 page.on('pageerror', lambda e: errors.append(e.stack or str(e)))
