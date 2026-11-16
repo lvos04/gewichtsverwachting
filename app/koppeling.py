@@ -178,10 +178,10 @@ PROGNOSE_STATUS = {
 
 def _laatste_prognoses(db: Session) -> dict[int, object]:
     from .forecast import ForecastSnapshot
-    latest = {}
-    for snap in db.scalars(select(ForecastSnapshot).order_by(ForecastSnapshot.created_at.desc(), ForecastSnapshot.id.desc())):
-        latest.setdefault(snap.cultivation_id, snap)
-    return latest
+    # Prognoses groeien dagelijks per teelt; alleen de nieuwste rij per teelt laden.
+    # Snapshots worden append-only met oplopend id geschreven.
+    nieuwste = select(func.max(ForecastSnapshot.id)).group_by(ForecastSnapshot.cultivation_id)
+    return {snap.cultivation_id: snap for snap in db.scalars(select(ForecastSnapshot).where(ForecastSnapshot.id.in_(nieuwste)))}
 
 
 # --- Endpoints -------------------------------------------------------------------------------
