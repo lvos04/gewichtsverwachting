@@ -87,7 +87,7 @@ async def lifespan(app):
         pass
     importer.shutdown_worker()
 
-app = FastAPI(title='Gewichtsverwachting chrysant', version='0.1.0', lifespan=lifespan,
+app = FastAPI(title='Gewichtsverwachting chrysant', version='0.1.1', lifespan=lifespan,
               docs_url=None if os.environ.get('DISABLE_API_DOCS') == '1' else '/docs')
 
 app.add_middleware(importer.ImportUploadLimitMiddleware)
@@ -125,7 +125,7 @@ app.include_router(settings.router)
 def health():
     with engine.connect() as connection:
         connection.execute(text('SELECT 1'))
-    return {'status': 'ok', 'version': '0.1.0'}
+    return {'status': 'ok', 'version': '0.1.1'}
 
 @app.get('/sw.js', include_in_schema=False)
 def service_worker():

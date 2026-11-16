@@ -1,6 +1,6 @@
 # TrueNAS SCALE Custom App
 
-Gebruik een versiegetagde image uit de geslaagde GitHub Actions-publicatie, bijvoorbeeld `ghcr.io/lvos04/gewichtsverwachting:v0.1.0`. Gebruik pas een tag die daadwerkelijk gepubliceerd is. De app is in een Linux-container getest; een installatie op de eigen TrueNAS-server blijft een afzonderlijke gebruikerstest.
+Gebruik een versiegetagde image uit de geslaagde GitHub Actions-publicatie, bijvoorbeeld `ghcr.io/lvos04/gewichtsverwachting:v0.1.1`. Gebruik pas een tag die daadwerkelijk gepubliceerd is. De app is in een Linux-container getest; een installatie op de eigen TrueNAS-server blijft een afzonderlijke gebruikerstest.
 
 1. Maak een dataset, bijvoorbeeld `/mnt/tank/apps/chrysant`. Geef de containergebruiker UID/GID **568:568** lees- en schrijfrechten via de TrueNAS ACL-editor. Gebruik geen algemene wereldschrijfrechten.
 2. Open **Apps → Discover → Custom App** en vul de applicatienaam `gewichtsverwachting` in.
