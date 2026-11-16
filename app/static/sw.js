@@ -1,10 +1,11 @@
-const CACHE = "chrysant-shell-v2";
+const CACHE = "chrysant-shell-v3";
 const SHELL = [
   "/",
   "/static/index.html",
   "/static/style.css",
   "/static/app.js",
   "/static/js/util.js",
+  "/static/history_bulk.js",
   "/static/icon.svg",
   "/static/manifest.webmanifest",
 ];

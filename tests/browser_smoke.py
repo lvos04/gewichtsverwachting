@@ -360,7 +360,10 @@ def run():
                 expect(page.locator('[data-year-round="Ronde 1"]')).to_have_value('')
                 expect(page.locator('#legacy-confirm')).to_be_disabled()
                 assert len(page.request.get(base+'/api/cultivations').json())==before_company
-                page.locator('[data-year-round="Ronde 1"]').fill('2025')
+                page.locator('#legacy-bulk-year').fill('2025')
+                page.locator('#legacy-bulk-year-rounds').select_option(['Ronde 1'])
+                page.locator('#legacy-year-fill').click()
+                expect(page.locator('[data-year-round="Ronde 1"]')).to_have_value('2025')
                 page.locator('#legacy-weekday').select_option('iso_monday_1')
                 page.locator('#legacy-config-form [name=years_confirmed]').check()
                 page.get_by_role('button',name='Jaarankers en koppelingen opnieuw controleren',exact=True).click()
@@ -392,6 +395,13 @@ def run():
                 class_crop=next(crop for crop in company_crops if crop['bay_number']==2)
                 class_harvest=page.request.get(base+f"/api/cultivations/{class_crop['id']}").json()['harvests'][0]
                 assert class_harvest['weight_g'] is None and sorted(item['weight_g'] for item in class_harvest['quality_classes'])==[65,95]
+                # Reopen confirmed evidence without duplicating its previously imported crops.
+                with page.expect_response(lambda response:'/new-review' in response.url and response.request.method=='POST') as reopened:
+                    page.locator('[data-history-new-review]').click()
+                reopened_id=reopened.value.json()['id']
+                assert reopened_id!=weights['id']
+                expect(page.locator('#legacy-company-rows')).to_contain_text('Al geïmporteerd: 3')
+                assert len([crop for crop in page.request.get(base+'/api/cultivations').json() if crop['round_name']=='Ronde 1'])==3
                 page.locator('#close-modal').click()
                 # The big data sheet has its own durable supplemental import and explicit interpretation.
                 page.goto(base+'/#imports/lighting')
@@ -448,6 +458,62 @@ def run():
                 page.locator('#lighting-revoke').click()
                 expect(page.locator('#lighting-job-detail')).to_contain_text('Herroepen')
                 page.locator('#close-modal').click()
+                # Full-size synthetic layout: all paired and extra planning rows remain visible.
+                bulk_weights=Workbook(); ws=bulk_weights.active; ws.title='teeltschema'
+                bulk_weights.create_sheet('data')
+                for column,value in {1:'kap',2:'planten',7:'licht uit',16:'leeg',19:'gewicht'}.items(): ws.cell(1,column,value)
+                n=2
+                for number in range(7,28):
+                    for bay in range(1,41):
+                        for column,value in {1:bay,2:number+5,3:1,7:number+7,8:1,16:number+14,17:1}.items(): ws.cell(n,column,value)
+                        if bay%4: ws.cell(n,19,105)
+                        n+=1
+                bulk_program=Workbook();bulk_program.remove(bulk_program.active)
+                for number in range(1,35):
+                    ws=bulk_program.create_sheet('Ronde '+str(number))
+                    for cell,value in {'C8':'Ronde '+str(number),'D10':'schema','E10':'pl datum','H10':'licht uit','N10':'bloei','C11':'vak','E11':'w/d'}.items(): ws[cell]=value
+                    for bay in range(1,41):
+                        for column,value in {3:bay,4:'a',5:number+5,6:1,7:14,8:number+7,9:1,13:54,14:number+14,15:1}.items(): ws.cell(bay+11,column,value)
+                bulk_books=[]
+                for book,name in [(bulk_weights,'synthetic-bulk-weight.xlsx'),(bulk_program,'synthetic-bulk-program.xlsx')]:
+                    buffer=io.BytesIO();book.save(buffer)
+                    response=page.request.post(base+'/api/history-imports',multipart={'file':{'name':name,'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':buffer.getvalue()}},headers={'Origin':base})
+                    assert response.ok,response.text();bulk_books.append(response.json())
+                bulk_weight,bulk_program_source=bulk_books
+                response=page.request.post(base+f"/api/history-imports/{bulk_weight['id']}/legacy-preview",data={'program_import_id':bulk_program_source['id'],'weekday_convention':'iso_monday_1','round_years':{'Ronde '+str(i):2024 for i in range(1,35)}},headers={'Origin':base})
+                assert response.ok,response.text()
+                assert response.json()['summary']['total_rows']==1360
+                assert response.json()['summary']['ambiguous']==630
+                before_bulk=len(page.request.get(base+'/api/cultivations').json())
+                page.goto(base+'/#imports/history')
+                page.locator('#company-weight').select_option(str(bulk_weight['id']));page.locator('#company-program').select_option(str(bulk_program_source['id']))
+                page.get_by_role('button',name='Bedrijfsvoorbeeld voorbereiden',exact=True).click()
+                expect(page.locator('#legacy-row-accounting')).to_contain_text('1.360')
+                expect(page.locator('.history-row-tools')).to_contain_text('1–200 van 1.360')
+                host=page.locator('.history-bulk-host')
+                expect(host.locator('[data-state="status"]')).to_be_visible()
+                host.locator('[data-state="status"]').select_option('ambiguous')
+                host.locator('[data-state="field-beds"]').check()
+                host.locator('[data-state="value-beds"]').fill('6')
+                host.locator('[data-state="reason"]').fill('Zes bedden voor alle gelijke enkelsoortige bronregels gecontroleerd')
+                with page.expect_response(lambda res:'/bulk-review' in res.url and res.request.method=='POST') as dry_response:
+                    host.locator('[data-inspect]').click()
+                assert dry_response.value.json()['bulk_review']['matched_rows']==630
+                assert dry_response.value.json()['bulk_review']['changed_rows']==630
+                expect(host.locator('[data-apply]')).to_be_enabled()
+                with page.expect_response(lambda res:'/bulk-review' in res.url and res.request.method=='POST'):
+                    host.locator('[data-apply]').click()
+                expect(page.locator('#legacy-row-accounting')).to_contain_text('630 geldig')
+                assert len(page.request.get(base+'/api/cultivations').json())==before_bulk
+                # Checkboxes persist across page boundaries and the final page is reachable.
+                page.locator('[data-history-select]').first.check()
+                page.locator('[data-page="last"]').click()
+                expect(page.locator('.history-row-tools')).to_contain_text('1.201–1.360 van 1.360')
+                page.locator('[data-history-select]').first.check()
+                expect(page.locator('.history-selection-count')).to_contain_text('2 regels geselecteerd')
+                expect(page.locator('#legacy-company-rows')).to_contain_text('Ronde 34')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.locator('#close-modal').click()
                 # 0.3: oogstcorrectie met reden, back-upstatus, koppelingsschakelaar en optionele MFA.
                 page.goto(base+'/#cultivation/1')
                 page.locator('#harvest-correct-btn').click()
@@ -478,6 +544,7 @@ def run():
                 assert res.ok, res.text()
                 page.locator('#logout').click()
                 expect(page.get_by_role('heading', name='Aanmelden')).to_be_visible()
+                expect(page.locator('#modal > *')).to_have_count(0)
                 page.get_by_label('Gebruikersnaam').fill('reader')
                 page.get_by_label('Wachtwoord', exact=True).fill('synthetic reader password')
                 page.get_by_role('button', name='Inloggen').click()
@@ -503,7 +570,7 @@ def run():
                 expect(page.locator('#logout')).to_contain_text('browser-owner')
                 assert not errors, errors
                 browser.close()
-            print('Browser checks passed: planning/cards, offline five-stem idempotency, Priva-first supplemental lighting, paired company years/classes, generic Excel review/confirm, climate-profile settings reload, seasonal curve/growth/environment, forecast history, scan confirmation, harvest classes, harvest correction, backup status, link switch, optional MFA, mobile overflow and reader/navigation isolation.')
+            print('Browser checks passed: 1360-row reconciliation, cross-page bulk630, year batch, confirmed-review recovery, planning/cards, offline five-stem idempotency, Priva-first supplemental lighting, paired company years/classes, generic Excel review/confirm, climate-profile settings reload, seasonal curve/growth/environment, forecast history, scan confirmation, harvest classes, harvest correction, backup status, link switch, optional MFA, mobile overflow and reader/navigation isolation.')
         except Exception:
             logfile.flush(); logfile.seek(0)
             print(logfile.read()[-7000:], file=sys.stderr)

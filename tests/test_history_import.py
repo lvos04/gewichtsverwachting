@@ -645,3 +645,223 @@ def test_encoded_xml_entities_are_rejected_by_safe_workbook_parser(setup):
     assert response.status_code==422,response.text
     with factory() as db:
         assert db.scalars(select(hi.HistoryImport)).all()==[]
+
+
+def test_bulk_review_all_pages_preserves_existing_correction_and_checks_version(setup):
+    client, factory, _ = setup
+    cookies = auth_cookie(factory)
+    rows = [sample_row(f"R{number}", 1, "a") for number in range(1, 222)]
+    for row in rows:
+        row[8] = None
+    imported = upload(client, cookies, workbook(rows))
+    preview = map_file(client, cookies, imported["id"], overrides=[
+        {"row_number": 2, "fields": {"density": 77}, "reason": "papieren telling gecontroleerd"}])
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["preview"]["total"] == 221
+    assert len(preview.json()["preview"]["rows"]) == 200
+    groups = client.get(f"/api/history-imports/{imported['id']}/review-groups", cookies=cookies)
+    assert groups.status_code == 200
+    assert groups.json()["total_rows"] == 221
+    version = groups.json()["review_version_id"]
+    body = {"expected_review_version_id": version,
+            "all_matching": {"status": "valid", "variety": "a"},
+            "fields": {"density": 55}, "reason": "gelijke plantdichtheid bronregister gecontroleerd",
+            "dry_run": True}
+    dry_run = client.post(f"/api/history-imports/{imported['id']}/bulk-review",
+                          json=body, cookies=cookies)
+    assert dry_run.status_code == 200, dry_run.text
+    assert dry_run.json()["bulk_review"]["matched_rows"] == 221
+    assert dry_run.json()["bulk_review"]["changed_rows"] == 220
+    assert dry_run.json()["bulk_review"]["skipped"]["existing_value_preserved"] == 1
+    body["dry_run"] = False
+    applied = client.post(f"/api/history-imports/{imported['id']}/bulk-review",
+                          json=body, cookies=cookies)
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["bulk_review"]["changed_rows"] == 220
+    with factory() as db:
+        one = db.scalar(select(hi.HistoryPreviewRow).where(
+            hi.HistoryPreviewRow.import_id == imported["id"], hi.HistoryPreviewRow.row_number == 2))
+        last = db.scalar(select(hi.HistoryPreviewRow).where(
+            hi.HistoryPreviewRow.import_id == imported["id"], hi.HistoryPreviewRow.row_number == 222))
+        assert one.effective["density"] == 77
+        assert last.effective["density"] == 55
+    stale = client.post(f"/api/history-imports/{imported['id']}/bulk-review",
+                        json=body, cookies=cookies)
+    assert stale.status_code == 409
+    overly_broad = {"expected_review_version_id": applied.json()["bulk_review"]["review_version_id"],
+                    "all_matching": {"status": "valid"}, "fields": {"variety": "t"},
+                    "reason": "te brede soortwijziging"}
+    assert client.post(f"/api/history-imports/{imported['id']}/bulk-review",
+                       json=overly_broad, cookies=cookies).status_code == 422
+
+
+def test_legacy_reconciliation_exposes_all_program_rows_and_selected_planning(setup):
+    client, factory, _ = setup
+    cookies = auth_cookie(factory)
+    weights, program = paired_legacy_workbooks()
+    w = upload(client, cookies, weights)
+    p = upload(client, cookies, program)
+    body = {"program_import_id": p["id"],
+            "round_years": {"Ronde 7": 2024, "Ronde 3": 2024},
+            "weekday_convention": "iso_monday_1", "single_species_beds": 6}
+    preview = client.post(f"/api/history-imports/{w['id']}/legacy-preview",
+                          json=body, cookies=cookies)
+    assert preview.status_code == 200, preview.text
+    accounting = preview.json()["legacy_profile"]["row_accounting"]
+    assert accounting == {"weight_source_rows": 3, "program_source_rows": 15,
+                          "paired_program_rows": 3, "program_only_rows": 12,
+                          "weighted_rows": 2, "unweighted_rows": 1,
+                          "formula_weight_rows": 0, "preview_rows": 15,
+                          "excluded_rows": 13, "ambiguous_rows": 0, "valid_rows": 2}
+    rows = client.get(f"/api/history-imports/{w['id']}/rows",
+                      params={"offset": 3, "limit": 20}, cookies=cookies)
+    assert rows.status_code == 200
+    assert len(rows.json()["rows"]) == 12
+    assert all(row["status"] == "excluded" for row in rows.json()["rows"])
+    version = preview.json()["reviews"][-1]["id"]
+    chosen = next(row["row_number"] for row in rows.json()["rows"]
+                  if row["source"]["sheet"] == "Ronde 3")
+    bulk = client.post(f"/api/history-imports/{w['id']}/bulk-review", cookies=cookies,
+                       json={"expected_review_version_id": version, "row_numbers": [4, chosen],
+                             "include_planning": True, "reason": "beide planningsregels nagekeken"})
+    assert bulk.status_code == 200, bulk.text
+    assert bulk.json()["bulk_review"]["changed_rows"] == 2
+    with factory() as db:
+        selected = db.scalars(select(hi.HistoryPreviewRow).where(
+            hi.HistoryPreviewRow.import_id == w["id"],
+            hi.HistoryPreviewRow.row_number.in_((4, chosen)))).all()
+        assert len(selected) == 2
+        assert all(row.status == "valid" for row in selected)
+        assert all(row.cultivations[0]["create_harvest"] is False for row in selected)
+
+
+def test_unpaired_bay_in_matched_round_remains_visible_and_conflicted_title_needs_review(setup):
+    from openpyxl import load_workbook
+    client, factory, _ = setup
+    cookies = auth_cookie(factory)
+    weights, program = paired_legacy_workbooks(extra=True)
+    wb = load_workbook(BytesIO(weights))
+    wb["teeltschema"].delete_rows(3)
+    out = BytesIO(); wb.save(out)
+    weights = out.getvalue()
+    wb = load_workbook(BytesIO(program))
+    wb["Ronde 3"]["C8"] = "Ronde 99"
+    out = BytesIO(); wb.save(out)
+    program = out.getvalue()
+    w = upload(client, cookies, weights)
+    p = upload(client, cookies, program)
+    body = {"program_import_id": p["id"],
+            "round_years": {"Ronde 7": 2024, "Ronde 3": 2024},
+            "weekday_convention": "iso_monday_1", "single_species_beds": 6}
+    preview = client.post(f"/api/history-imports/{w['id']}/legacy-preview",
+                          json=body, cookies=cookies)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["legacy_profile"]["matches"][0]["matched_round"] == "Ronde 7"
+    accounting = preview.json()["legacy_profile"]["row_accounting"]
+    assert accounting["weight_source_rows"] == 3
+    assert accounting["program_source_rows"] == 20
+    assert accounting["program_only_rows"] == 17
+    rows = client.get(f"/api/history-imports/{w['id']}/rows",
+                      params={"limit": 100}, cookies=cookies).json()["rows"]
+    missing_bay = next(row for row in rows if row["source"]["sheet"] == "Ronde 7" and
+                       row["effective"]["bay_number"] == 2)
+    assert missing_bay["status"] == "excluded"
+    conflicted = next(row for row in rows if row["source"]["sheet"] == "Ronde 3")
+    bulk = client.post(f"/api/history-imports/{w['id']}/bulk-review", cookies=cookies,
+                       json={"expected_review_version_id": preview.json()["reviews"][-1]["id"],
+                             "row_numbers": [conflicted["row_number"]],
+                             "include_planning": True, "reason": "werkbladnaam nagezien"})
+    assert bulk.status_code == 200, bulk.text
+    revised = next(row for row in bulk.json()["preview"]["rows"]
+                   if row["row_number"] == conflicted["row_number"])
+    assert revised["status"] == "ambiguous"
+    assert "programmarondelabel" in revised["reasons"][0]
+    reviewed = client.post(f"/api/history-imports/{w['id']}/bulk-review", cookies=cookies,
+                           json={"expected_review_version_id": bulk.json()["bulk_review"]["review_version_id"],
+                                 "row_numbers": [conflicted["row_number"]],
+                                 "confirm_program_round_title": True,
+                                 "reason": "bronrondetitel met teeltkaart gecontroleerd"})
+    assert reviewed.status_code == 200, reviewed.text
+    final = next(row for row in reviewed.json()["preview"]["rows"]
+                 if row["row_number"] == conflicted["row_number"])
+    assert final["status"] == "valid"
+
+
+def test_new_review_recovers_excluded_rows_from_confirmed_source_without_duplicate_crops(setup):
+    client, factory, _ = setup
+    cookies = auth_cookie(factory)
+    weights, program = paired_legacy_workbooks()
+    w = upload(client, cookies, weights)
+    p = upload(client, cookies, program)
+    body = {"program_import_id": p["id"], "round_years": {"Ronde 7": 2024},
+            "weekday_convention": "iso_monday_1", "single_species_beds": 6}
+    first = client.post(f"/api/history-imports/{w['id']}/legacy-preview",
+                        json=body, cookies=cookies)
+    assert first.status_code == 200, first.text
+    confirmed = client.post(f"/api/history-imports/{w['id']}/confirm",
+                            json={"confirmed": True}, cookies=cookies)
+    assert confirmed.status_code == 200, confirmed.text
+    assert len(confirmed.json()["created_ids"]) == 3
+    reopened = client.post(f"/api/history-imports/{w['id']}/new-review", cookies=cookies)
+    assert reopened.status_code == 200, reopened.text
+    clone = reopened.json()
+    assert clone["id"] != w["id"]
+    assert clone["new_review"]["cloned_from_import_id"] == w["id"]
+    assert clone["summary"]["duplicate"] == 2
+    assert clone["summary"]["excluded"] == 13
+    revised = client.post(f"/api/history-imports/{clone['id']}/bulk-review",
+                          cookies=cookies,
+                          json={"expected_review_version_id": clone["reviews"][-1]["id"],
+                                "row_numbers": [4], "include_planning": True,
+                                "reason": "ontbrekende planningsregel gecontroleerd"})
+    assert revised.status_code == 200, revised.text
+    second_confirm = client.post(f"/api/history-imports/{clone['id']}/confirm",
+                                 json={"confirmed": True}, cookies=cookies)
+    assert second_confirm.status_code == 200, second_confirm.text
+    assert len(second_confirm.json()["created_ids"]) == 1
+    assert second_confirm.json()["skipped_duplicate_rows"] == [2, 3]
+    with factory() as db:
+        assert db.get(hi.HistoryImport, w["id"]).status == "confirmed"
+        assert db.get(hi.HistoryImport, clone["id"]).status == "confirmed"
+        assert len(db.scalars(select(Cultivation)).all()) == 4
+
+
+def test_program_only_round_title_confirmation_survives_later_planning_inclusion(setup):
+    from openpyxl import load_workbook
+    client, factory, _ = setup
+    cookies = auth_cookie(factory)
+    weights, program = paired_legacy_workbooks()
+    wb = load_workbook(BytesIO(program))
+    wb["Ronde 3"].title = "Ronde 34"
+    wb["Ronde 34"]["C8"] = "Ronde 12"
+    output = BytesIO(); wb.save(output)
+    w = upload(client, cookies, weights)
+    p = upload(client, cookies, output.getvalue())
+    base = f"/api/history-imports/{w['id']}"
+    preview = client.post(f"{base}/legacy-preview", cookies=cookies,
+                          json={"program_import_id": p["id"],
+                                "round_years": {"Ronde 7": 2024, "Ronde 34": 2024},
+                                "weekday_convention": "iso_monday_1", "single_species_beds": 6})
+    assert preview.status_code == 200, preview.text
+    row_number = 1_034_012
+    original = next(row for row in preview.json()["preview"]["rows"]
+                    if row["row_number"] == row_number)
+    assert original["status"] == "excluded"
+    assert "round_label_conflict" in original["original"]["program_review_reasons"]
+    title = client.post(f"{base}/bulk-review", cookies=cookies,
+                        json={"expected_review_version_id": preview.json()["reviews"][-1]["id"],
+                              "row_numbers": [row_number], "confirm_program_round_title": True,
+                              "reason": "afwijkende rondetitel met teeltkaart gecontroleerd"})
+    assert title.status_code == 200, title.text
+    assert next(row for row in title.json()["preview"]["rows"]
+                if row["row_number"] == row_number)["status"] == "excluded"
+    included = client.post(f"{base}/bulk-review", cookies=cookies,
+                           json={"expected_review_version_id": title.json()["bulk_review"]["review_version_id"],
+                                 "row_numbers": [row_number], "include_planning": True,
+                                 "reason": "jaar en planningsregel afzonderlijk nagekeken"})
+    assert included.status_code == 200, included.text
+    final = next(row for row in included.json()["preview"]["rows"]
+                 if row["row_number"] == row_number)
+    assert final["status"] == "valid"
+    assert final["cultivations"][0]["create_harvest"] is False
+    assert any("programmarondelabel" in reason for reason in final["reasons"])

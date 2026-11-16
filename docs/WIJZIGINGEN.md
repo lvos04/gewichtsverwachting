@@ -35,6 +35,18 @@ standaardwaarden behouden het bestaande gedrag, behalve waar dat aantoonbaar onv
 * `/api/audit` ondersteunt paginering (`before_id`, `limit`); standaard ongewijzigd de nieuwste 1000.
 * Back-upstatus (`GET /api/backups/status`) met schijfruimte en advies.
 
+### Historische Excel-import (uit 0.2.2)
+* Bulkbeoordeling van importregels (`app/static/history_bulk.js`): gelijke antwoorden voor alle passende bronrijen
+  over alle pagina's (filter op status, reden, ronde, blok, werkblad of soort) of alleen voor aangevinkte rijen,
+  ook op andere pagina's. Eerst een proefberekening, verplichte onderbouwing; bestaande en handmatige waarden blijven
+  standaard behouden. Iedere wijziging doorloopt opnieuw de kwaliteitscontrole; pas de definitieve importknop maakt
+  teelten aan.
+* De gekoppelde teelt-/gewicht- en programmawerkboeken tonen alle regels: 840 teeltschemaregels plus 520 uitsluitend
+  programmaregels (1.360 unieke regels; gekoppelde rijen tellen één keer). Regels zonder gewicht blijven zichtbaar
+  maar standaard uitgesloten. Jaarankers kunnen voor meerdere geselecteerde rondes tegelijk worden ingevuld.
+* `history_bulk.js` staat in de offline-cache van de service worker (cacheversie verhoogd naar `v3`) en wordt als
+  module van dezelfde oorsprong geladen, binnen de bestaande Content-Security-Policy.
+
 ### Performance
 * Overzicht/taken (`dashboard_data`) filtert en telt in SQL in plaats van alle metingen en planningen te laden.
 * Teeltdetail laadt takken en planning voor alle metingen in een vast aantal queries (geen N+1).
