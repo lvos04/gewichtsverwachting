@@ -45,4 +45,45 @@ function newClientId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export { $, $$, esc, fmt, date, today, localNow, json, newClientId };
+// Template-helper die standaard escapet: html`<p>${tekst}</p>` escapet `tekst`.
+// Geneste html``-resultaten en arrays daarvan blijven HTML; vertrouwde HTML uit
+// bestaande hulpfuncties (field(), tag(), ...) markeer je expliciet met raw().
+class SafeHtml {
+  constructor(value) {
+    this.value = value;
+  }
+  toString() {
+    return this.value;
+  }
+}
+const raw = (value) => new SafeHtml(String(value ?? ""));
+const renderValue = (value) =>
+  value instanceof SafeHtml
+    ? value.value
+    : Array.isArray(value)
+      ? value.map(renderValue).join("")
+      : esc(value);
+function html(strings, ...values) {
+  return new SafeHtml(
+    strings.reduce(
+      (out, part, i) =>
+        out + part + (i < values.length ? renderValue(values[i]) : ""),
+      "",
+    ),
+  );
+}
+
+export {
+  $,
+  $$,
+  esc,
+  fmt,
+  date,
+  today,
+  localNow,
+  json,
+  newClientId,
+  html,
+  raw,
+  SafeHtml,
+};

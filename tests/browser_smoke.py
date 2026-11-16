@@ -448,8 +448,33 @@ def run():
                 page.locator('#lighting-revoke').click()
                 expect(page.locator('#lighting-job-detail')).to_contain_text('Herroepen')
                 page.locator('#close-modal').click()
+                # 0.3: oogstcorrectie met reden, back-upstatus, koppelingsschakelaar en optionele MFA.
+                page.goto(base+'/#cultivation/1')
+                page.locator('#harvest-correct-btn').click()
+                page.locator('#stem_count').fill('321')
+                page.locator('#correction_reason').fill('Telling gecontroleerd met de veilinglijst')
+                page.get_by_role('button', name='Correctie bewaren').click()
+                expect(page.get_by_text('Oogst gecorrigeerd').first).to_be_visible()
+                harvests=page.request.get(base+'/api/cultivations/1').json()['harvests']
+                assert harvests[-1]['supersedes_id']==harvests[-2]['id'] and harvests[-1]['stem_count']==321, harvests
+                assert harvests[-1]['quality_classes']==harvests[-2]['quality_classes']
+                page.goto(base+'/#manage')
+                expect(page.locator('#backup-status')).to_contain_text('vrij van')
+                expect(page.locator('#backup-status')).to_contain_text('dezelfde dataset')
+                expect(page.locator('#koppeling-aan')).not_to_be_checked()
+                page.locator('#koppeling-aan').check()
+                expect(page.locator('#koppelsleutels')).to_contain_text('beantwoordt verzoeken')
+                assert page.request.get(base+'/api/koppeling/status').json()=={'ingeschakeld':True}
+                page.locator('#mfa-start').click()
+                secret=page.locator('#mfa-panel code').inner_text().strip()
+                sys.path.insert(0, str(ROOT))
+                from app.mfa import totp
+                page.locator('#mfa_code').fill(totp(secret, int(time.time()//30)))
+                page.get_by_role('button', name='Bevestigen en aanzetten').click()
+                expect(page.locator('#mfa-panel')).to_contain_text('Bij aanmelden vraagt de app een code')
+                assert page.request.get(base+'/api/auth/mfa').json()['mfa_enabled'] is True
                 # Verify setup has closed, and local data cannot be sent as another account.
-                res = page.request.post(base + '/api/users', data={'username':'reader','password':'synthetic reader password','role':'lezer'})
+                res = page.request.post(base + '/api/users', data={'username':'reader','password':'synthetic reader password','role':'lezer'}, headers={'Origin': base})
                 assert res.ok, res.text()
                 page.locator('#logout').click()
                 expect(page.get_by_role('heading', name='Aanmelden')).to_be_visible()
@@ -466,10 +491,19 @@ def run():
                 expect(page.get_by_text('Je account heeft alleen leesrechten.', exact=True)).to_be_visible()
                 expect(page.get_by_role('button', name='Meting veilig bewaren')).to_be_disabled()
                 expect(page.locator('#queue-count')).to_have_text('0')
-                assert page.request.post(base + '/api/varieties', data={'name':'forbidden'}).status == 403
+                assert page.request.post(base + '/api/varieties', data={'name':'forbidden'}, headers={'Origin': base}).status == 403
+                # Beheerder met MFA: tweede stap met verificatiecode (volgende tijdstap, geen hergebruik).
+                page.locator('#logout').click()
+                page.get_by_label('Gebruikersnaam').fill('browser-owner')
+                page.get_by_label('Wachtwoord', exact=True).fill('synthetic password 2026')
+                page.get_by_role('button', name='Inloggen').click()
+                expect(page.get_by_role('heading', name='Verificatiecode')).to_be_visible()
+                page.get_by_label('Code').fill(totp(secret, int(time.time()//30)+1))
+                page.get_by_role('button', name='Bevestigen').click()
+                expect(page.locator('#logout')).to_contain_text('browser-owner')
                 assert not errors, errors
                 browser.close()
-            print('Browser checks passed: planning/cards, offline five-stem idempotency, Priva-first supplemental lighting, paired company years/classes, generic Excel review/confirm, climate-profile settings reload, seasonal curve/growth/environment, forecast history, scan confirmation, harvest classes, mobile overflow and reader/navigation isolation.')
+            print('Browser checks passed: planning/cards, offline five-stem idempotency, Priva-first supplemental lighting, paired company years/classes, generic Excel review/confirm, climate-profile settings reload, seasonal curve/growth/environment, forecast history, scan confirmation, harvest classes, harvest correction, backup status, link switch, optional MFA, mobile overflow and reader/navigation isolation.')
         except Exception:
             logfile.flush(); logfile.seek(0)
             print(logfile.read()[-7000:], file=sys.stderr)

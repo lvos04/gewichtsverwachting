@@ -8,6 +8,8 @@ import {
   localNow,
   json,
   newClientId,
+  html,
+  raw,
 } from "./js/util.js";
 let user = null,
   cultivations = [],
@@ -239,10 +241,39 @@ function auth(setup = false, message = "") {
       method: "POST",
       body: data,
     });
-    user = result.user || result;
-    sessionStorage.setItem("chrysant-user", JSON.stringify(user));
-    await start();
+    if (result.mfa_required) return mfaLogin(result.challenge);
+    await loggedIn(result);
   });
+}
+// Tweede stap bij accounts met tweestapsverificatie (optioneel per gebruiker).
+function mfaLogin(challenge) {
+  $(".auth .card").innerHTML = String(
+    html`<div class="eyebrow">Tweestapsverificatie</div><h1>Verificatiecode</h1><p class="sub">Voer de zescijferige code uit je authenticator-app in.</p><form id="mfa-form">${raw(field("code", "Code", "text", "", 'required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7"'))}${raw(formError())}<button class="primary" type="submit" style="width:100%">Bevestigen →</button></form>`,
+  );
+  $("#code").focus();
+  bindForm("#mfa-form", async (data) => {
+    try {
+      await loggedIn(
+        await api("/api/auth/login/mfa", {
+          method: "POST",
+          body: { challenge, code: data.code.replace(/\s/g, "") },
+        }),
+      );
+    } catch (e) {
+      if (e.status === 401 && /verlopen/.test(e.message))
+        return auth(false, e.message);
+      throw e;
+    }
+  });
+}
+async function loggedIn(result) {
+  user = result.user || result;
+  sessionStorage.setItem("chrysant-user", JSON.stringify(user));
+  await start();
+  if (user?.mfa_setup_required)
+    toast(
+      "Tweestapsverificatie is verplicht voor beheerders: stel deze in via Beheer.",
+    );
 }
 async function start() {
   shell();
@@ -470,7 +501,7 @@ async function detail(id) {
             "Planning ontbreekt",
             "Voeg de datums toe om KD-dagen en meetmomenten te berekenen.",
           )
-    }</section><section class="card" id="growth-target"><h2>Groei & streeflengte</h2><p class="hint">Groei vergelijken…</p></section><section class="card" id="environment-panel"><h2>Licht, klimaat & water per fase</h2><p class="hint">Brondekking laden…</p></section><section class="card"><h2>Metingen</h2>${measurementHistory(c.measurements || [])}</section><section class="card" id="forecast-history"><h2>Eerdere verwachtingen</h2><p class="hint">Prognosehistorie laden…</p></section></div><div><section class="card"><h2>Registreren</h2><div class="actions"><button id="event-btn">＋ Gebeurtenis</button><button id="harvest-btn">＋ Oogst</button><button id="cultivation-state">Teeltstatus</button></div><p class="hint" style="margin-top:12px">Leg afwijkingen, remstof, licht en teeltinstellingen met hun werkelijke datum vast.</p></section><section class="card"><h2>Teelttijdlijn</h2><div class="timeline">${
+    }</section><section class="card" id="growth-target"><h2>Groei & streeflengte</h2><p class="hint">Groei vergelijken…</p></section><section class="card" id="environment-panel"><h2>Licht, klimaat & water per fase</h2><p class="hint">Brondekking laden…</p></section><section class="card"><h2>Metingen</h2>${measurementHistory(c.measurements || [])}</section><section class="card" id="forecast-history"><h2>Eerdere verwachtingen</h2><p class="hint">Prognosehistorie laden…</p></section></div><div><section class="card"><h2>Registreren</h2><div class="actions"><button id="event-btn">＋ Gebeurtenis</button><button id="harvest-btn">＋ Oogst</button>${c.harvests?.length ? '<button id="harvest-correct-btn">Oogst corrigeren</button>' : ""}<button id="cultivation-state">Teeltstatus</button></div><p class="hint" style="margin-top:12px">Leg afwijkingen, remstof, licht en teeltinstellingen met hun werkelijke datum vast.</p></section><section class="card"><h2>Teelttijdlijn</h2><div class="timeline">${
       [
         ...(c.events || []).map((e) => ({
           date: e.occurred_at,
@@ -479,8 +510,8 @@ async function detail(id) {
         })),
         ...(c.harvests || []).map((h) => ({
           date: h.start_date,
-          title: "Oogst geregistreerd",
-          body: `${fmt(h.weight_g, " g/tak")} · ${fmt(h.stem_count, " takken")} · ${h.notes || ""}`,
+          title: h.supersedes_id ? "Oogst gecorrigeerd" : "Oogst geregistreerd",
+          body: `${fmt(h.weight_g, " g/tak")} · ${fmt(h.stem_count, " takken")} · ${h.notes || ""}${h.supersedes_id ? ` · Reden: ${h.reason || ""} (vastgelegd ${date(h.created_at)})` : ""}`,
         })),
       ]
         .sort((a, b) => String(b.date).localeCompare(a.date))
@@ -493,6 +524,9 @@ async function detail(id) {
   $("#edit-plan").onclick = () => planningForm(c.id, p);
   $("#event-btn").onclick = () => eventForm(c.id);
   $("#harvest-btn").onclick = () => harvestForm(c.id);
+  if ($("#harvest-correct-btn"))
+    $("#harvest-correct-btn").onclick = () =>
+      harvestCorrectionForm(c.id, c.harvests[c.harvests.length - 1]);
   $("#cultivation-state").onclick = () => cultivationState(c);
   await Promise.allSettled([
     growthPanel(c.id),
@@ -621,6 +655,37 @@ function harvestForm(id) {
     });
     $("#modal").close();
     await getBase();
+    route();
+  });
+}
+// Correctie van de laatste oogstregistratie: nieuwe versie met verplichte reden;
+// de oorspronkelijke registratie blijft zichtbaar in de tijdlijn en de audit.
+function harvestCorrectionForm(id, h) {
+  const classes = Array.isArray(h.quality_classes) && h.quality_classes.length > 1;
+  modal(
+    "Oogst corrigeren",
+    String(
+      html`<form id="harvest-correction-form"><p class="hint">De oorspronkelijke registratie blijft bewaard. Prognoses en historische referenties gebruiken vanaf nu de gecorrigeerde waarde.</p><div class="form-grid">${raw(field("start_date", "Begin oogst", "date", h.start_date || "", "required"))}${raw(field("end_date", "Leegdatum", "date", h.end_date || "", "required"))}${classes ? raw('<p class="hint full">Deze oogst heeft afzonderlijke kwaliteitsklassen; die blijven ongewijzigd.</p>') : raw(field("weight_g", "Vers eindgewicht per tak (g)", "number", h.weight_g ?? "", 'min="0.1" max="2000" step="0.1" required'))}${raw(field("stem_count", "Aantal geoogste takken", "number", h.stem_count ?? "", 'min="0" step="1"'))}${raw(field("loss_fraction", "Uitval (fractie: 0–1)", "number", h.loss_fraction ?? "", 'min="0" max="1" step="0.001"'))}</div>${raw(area("notes", "Opmerkingen", h.notes || ""))}${raw(area("correction_reason", "Reden voor correctie (verplicht)"))}${raw(formError())}<button type="submit" class="primary">Correctie bewaren</button></form>`,
+    ),
+  );
+  $("#correction_reason").required = true;
+  $("#correction_reason").minLength = 3;
+  bindForm("#harvest-correction-form", async (d) => {
+    const body = {
+      start_date: d.start_date,
+      end_date: d.end_date,
+      stem_count: d.stem_count === "" ? null : +d.stem_count,
+      loss_fraction: d.loss_fraction === "" ? null : +d.loss_fraction,
+      notes: d.notes || null,
+      reason: d.correction_reason,
+    };
+    if (!classes) body.weight_g = d.weight_g === "" ? null : +d.weight_g;
+    await api(`/api/cultivations/${id}/harvest/${h.id}/correction`, {
+      method: "POST",
+      body,
+    });
+    $("#modal").close();
+    toast("Oogstcorrectie bewaard");
     route();
   });
 }
@@ -1269,7 +1334,7 @@ async function manage() {
       "Bedrijfsinstellingen",
       "Soorten, koppelingen en historie. Wijzigingen blijven traceerbaar.",
     ) +
-    `${user.role === "admin" ? '<section class="card" id="general-settings"><p class="hint">Algemene instellingen laden…</p></section><section class="card" id="crop-profiles"><p class="hint">Seizoensprofielen laden…</p></section>' : ""}<div class="two"><div><section class="card"><div class="section-title"><h2>Soorten & doelgewicht</h2><button id="new-variety" class="small">＋ Soort</button></div><div class="table-wrap"><table><thead><tr><th>Soort</th><th>Doelgewicht</th><th></th></tr></thead><tbody>${varieties.map((v) => `<tr><td>${esc(v.name)} ${v.active === false ? tag("Historisch / inactief", "gray") : ""}</td><td>${fmt(v.target_weight_g, " g")}</td><td>${user.role === "admin" ? `<button class="small" data-variety="${v.id}">Wijzigen</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section><section class="card"><div class="section-title"><h2>Koppelingen met ingangsdatum</h2><button id="new-mapping" class="small">＋ Koppeling</button></div><p class="hint">Oude situaties blijven historisch intact. Kranen 41–45 hebben geen bevestigde kaptoewijzing.</p><div class="field"><label for="mapping-filter">Kap</label><select id="mapping-filter">${Array.from({ length: 40 }, (_, i) => `<option value="${i + 1}">Kap ${i + 1}</option>`).join("")}</select></div><div id="mapping-list"></div></section><section class="card"><h2>Oppervlakte per kap</h2><p class="hint">Een onbekende oppervlakte blijft leeg; zij wordt niet geschat.</p><form id="bay-settings"><div class="form-grid"><div class="field"><label for="bay-edit">Kap</label><select id="bay-edit" name="number">${options(bays, "number", (b) => "Kap " + b.number)}</select></div>${field("area_m2", "Oppervlakte (m²)", "number", bays[0]?.area_m2 || "", 'min="0.1" step="0.1"')}</div>${formError()}<button type="submit">Oppervlakte bewaren</button></form></section></div><div>${user.role === "admin" ? `<section class="card"><div class="section-title"><h2>Gebruikers</h2><button id="new-user" class="small">＋ Account</button></div>${users.map((u) => `<div style="display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)"><span><strong>${esc(u.username)}</strong><br><small class="muted">${esc(u.role)} · ${u.active === false ? "inactief" : "actief"}</small></span><button class="small" data-user="${u.id}">Beheren</button></div>`).join("")}</section><section class="card"><h2>Export & back-up</h2><p class="hint">Exporteer de bedrijfsregistratie of maak een consistente serverback-up inclusief bestanden.</p><div class="actions"><a class="btn" href="/api/export">↓ Volledige export</a><button id="backup-now">＋ Back-up maken</button></div><div id="backup-result"></div>${backups.length ? `<details><summary>Bewaarde back-ups (${backups.length})</summary>${backups.map((b) => `<p class="hint"><a href="/api/backups/${encodeURIComponent(b.filename)}">${esc(b.filename)}</a> · ${fmt(b.size / 1024, " kB")} · ${date(b.created_at)}</p>`).join("")}</details>` : ""}</section>` : '<section class="notice">Alleen beheerders kunnen gebruikers, oppervlakte, kalibraties en back-ups wijzigen.</section>'}</div></div>${
+    `<section class="card" id="mfa-panel"><p class="hint">Tweestapsverificatie laden…</p></section>${user.role === "admin" ? '<section class="card" id="general-settings"><p class="hint">Algemene instellingen laden…</p></section><section class="card" id="crop-profiles"><p class="hint">Seizoensprofielen laden…</p></section>' : ""}<div class="two"><div><section class="card"><div class="section-title"><h2>Soorten & doelgewicht</h2><button id="new-variety" class="small">＋ Soort</button></div><div class="table-wrap"><table><thead><tr><th>Soort</th><th>Doelgewicht</th><th></th></tr></thead><tbody>${varieties.map((v) => `<tr><td>${esc(v.name)} ${v.active === false ? tag("Historisch / inactief", "gray") : ""}</td><td>${fmt(v.target_weight_g, " g")}</td><td>${user.role === "admin" ? `<button class="small" data-variety="${v.id}">Wijzigen</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section><section class="card"><div class="section-title"><h2>Koppelingen met ingangsdatum</h2><button id="new-mapping" class="small">＋ Koppeling</button></div><p class="hint">Oude situaties blijven historisch intact. Kranen 41–45 hebben geen bevestigde kaptoewijzing.</p><div class="field"><label for="mapping-filter">Kap</label><select id="mapping-filter">${Array.from({ length: 40 }, (_, i) => `<option value="${i + 1}">Kap ${i + 1}</option>`).join("")}</select></div><div id="mapping-list"></div></section><section class="card"><h2>Oppervlakte per kap</h2><p class="hint">Een onbekende oppervlakte blijft leeg; zij wordt niet geschat.</p><form id="bay-settings"><div class="form-grid"><div class="field"><label for="bay-edit">Kap</label><select id="bay-edit" name="number">${options(bays, "number", (b) => "Kap " + b.number)}</select></div>${field("area_m2", "Oppervlakte (m²)", "number", bays[0]?.area_m2 || "", 'min="0.1" step="0.1"')}</div>${formError()}<button type="submit">Oppervlakte bewaren</button></form></section></div><div>${user.role === "admin" ? `<section class="card"><div class="section-title"><h2>Gebruikers</h2><button id="new-user" class="small">＋ Account</button></div>${users.map((u) => `<div style="display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)"><span><strong>${esc(u.username)}</strong><br><small class="muted">${esc(u.role)} · ${u.active === false ? "inactief" : "actief"}${u.mfa_enabled ? " · MFA aan" : ""}</small></span><button class="small" data-user="${u.id}">Beheren</button></div>`).join("")}</section><section class="card"><h2>Export & back-up</h2><p class="hint">Exporteer de bedrijfsregistratie of maak een consistente serverback-up inclusief bestanden.</p><div id="backup-status"><p class="hint">Schijfruimte laden…</p></div><div class="actions"><a class="btn" href="/api/export">↓ Volledige export</a><button id="backup-now">＋ Back-up maken</button></div><div id="backup-result"></div>${backups.length ? `<details><summary>Bewaarde back-ups (${backups.length})</summary>${backups.map((b) => `<p class="hint"><a href="/api/backups/${encodeURIComponent(b.filename)}">${esc(b.filename)}</a> · ${fmt(b.size / 1024, " kB")} · ${date(b.created_at)}</p>`).join("")}</details>` : ""}</section>` : '<section class="notice">Alleen beheerders kunnen gebruikers, oppervlakte, kalibraties en back-ups wijzigen.</section>'}</div></div>${
       user.role === "admin"
         ? `<section class="card" id="koppelsleutels"><p class="hint">Koppelsleutels laden…</p></section><section class="card"><div class="section-title"><h2>Gevalideerde eenheden & lichtinstellingen</h2><button id="new-calibration">＋ Validatie vastleggen</button></div><p class="hint">Leg alleen bevestigde bronbetekenissen en instellingen vast. Zonder bevestigde eenheid, lampkanaal of scherminvloed blijft de DLI ongeverifieerd.</p>${calibrations.length ? calibrations.map((c) => `<details><summary>${esc(c.kind)} · ${esc(c.label || "")} · ${esc(c.object_type || "")} ${esc(c.object_number || "")} · vanaf ${date(c.valid_from)}</summary>${json(c)}</details>`).join("") : empty("Nog geen bronvalidaties", "De actuele installatieconfiguratie wordt niet naar historische jaren teruggeprojecteerd.")}<details><summary>Laatst geregistreerde wijzigingen</summary>${
             audits.length
@@ -1284,8 +1349,14 @@ async function manage() {
           }</details></section>`
         : ""
     }`;
+  await mfaPanel();
   if (user.role === "admin")
-    await Promise.allSettled([settingsPanel(), cropProfilesPanel(), koppelsleutelsPanel()]);
+    await Promise.allSettled([
+      settingsPanel(),
+      cropProfilesPanel(),
+      koppelsleutelsPanel(),
+      backupStatusPanel(),
+    ]);
   if (!alive()) return;
   function drawMappings() {
     const selected = +$("#mapping-filter").value;
@@ -1402,6 +1473,27 @@ const SETTINGS_GROUPS = [
         "1440",
         "1",
       ],
+      [
+        "login_ip_max_attempts",
+        "Maximale inlogpogingen per IP-adres (0 = gelijk aan per account)",
+        "0",
+        "1000",
+        "1",
+      ],
+      [
+        "login_delay_max_seconds",
+        "Maximale vertraging na foute pogingen (seconden; 0 = uit)",
+        "0",
+        "10",
+        "0.25",
+      ],
+      [
+        "audit_keep_days",
+        "Auditlog bewaren (dagen; 0 = onbeperkt)",
+        "0",
+        "36500",
+        "1",
+      ],
     ],
   ],
   [
@@ -1494,7 +1586,7 @@ async function settingsPanel() {
     const result = await api("/api/settings");
     if (!alive() || !panel.isConnected) return;
     appSettings = result.settings;
-    panel.innerHTML = `<h2>Algemene instellingen</h2><p class="hint">Elke wijziging krijgt een ingangsdatum en blijft in de historie bewaard. De ondergrenzen voor modelvrijgave kunnen niet worden verlaagd.</p><form id="settings-form">${SETTINGS_GROUPS.map(([title, fields]) => `<details ${title === "Teelt & seizoen" ? "open" : ""}><summary>${title}</summary><div class="form-grid" style="margin-top:16px">${fields.map(([key, label, min, max, step]) => field(key, label, "number", appSettings[key], `required min="${min}" max="${max}" step="${step}"`)).join("")}</div>${title === "Model & vrijgave" ? modelProfileFields(appSettings) : ""}${title === "Importbronprioriteiten" ? '<p class="hint">Bij conflicten wint de hogere prioriteit van een geldige bron. Bij gelijke prioriteit geldt de meest recent bevestigde bron. Ongeldige of ontbrekende waarden winnen niet van een geldige waarde. Deze instellingen gelden tussen Priva-profielen; aanvullende Excelbelichting blijft altijd ondergeschikt aan Priva.</p>' : ""}${title === "Automatische back-ups" ? '<p class="hint">0 bewaart back-ups onbeperkt. Bij een bewaartermijn worden oudere exemplaren pas na een geslaagde automatische back-up opgeruimd; de laatste blijft behouden.</p>' : ""}</details>`).join("")}${field("settings_effective_from", "Ingangsmoment (leeg = direct; Nederlandse tijd)", "datetime-local")}${area("settings_reason", "Reden voor wijziging")}${formError()}<button type="submit" class="primary">Instellingen als nieuwe versie bewaren</button></form><details><summary>Versiehistorie (${result.history?.length || 0})</summary>${result.history?.length ? result.history.map((v) => `<details><summary>Versie ${esc(v.id)} · vanaf ${date(v.effective_from)}</summary><p class="hint">${esc(v.reason)}</p><div class="table-wrap"><table><tbody>${SETTINGS_GROUPS.flatMap(([, fields]) => fields.map(([key, label]) => `<tr><td>${label}</td><td>${fmt(v.settings[key])}</td></tr>`)).join("")}<tr><td>Modelinvoerprofiel</td><td>${profileLabel(v.settings.model_feature_profile || "basic")}</td></tr><tr><td>Daglichtbenadering toegestaan</td><td>${v.settings.environment_include_daylight_estimate ? "Ja" : "Nee"}</td></tr></tbody></table></div></details>`).join("") : '<p class="hint">De zichtbare beginwaarden zijn nog niet als nieuwe versie gewijzigd.</p>'}</details><p class="hint">${esc(result.infrastructure)}</p>`;
+    panel.innerHTML = `<h2>Algemene instellingen</h2><p class="hint">Elke wijziging krijgt een ingangsdatum en blijft in de historie bewaard. De ondergrenzen voor modelvrijgave kunnen niet worden verlaagd.</p><form id="settings-form">${SETTINGS_GROUPS.map(([title, fields]) => `<details ${title === "Teelt & seizoen" ? "open" : ""}><summary>${title}</summary><div class="form-grid" style="margin-top:16px">${fields.map(([key, label, min, max, step]) => field(key, label, "number", appSettings[key], `required min="${min}" max="${max}" step="${step}"`)).join("")}</div>${title === "Model & vrijgave" ? modelProfileFields(appSettings) : ""}${title === "Importbronprioriteiten" ? '<p class="hint">Bij conflicten wint de hogere prioriteit van een geldige bron. Bij gelijke prioriteit geldt de meest recent bevestigde bron. Ongeldige of ontbrekende waarden winnen niet van een geldige waarde. Deze instellingen gelden tussen Priva-profielen; aanvullende Excelbelichting blijft altijd ondergeschikt aan Priva.</p>' : ""}${title === "Toegang & beveiliging" ? securityFields(appSettings) : ""}${title === "Automatische back-ups" ? '<p class="hint">0 bewaart back-ups onbeperkt (huidige standaard). Advies: 30 dagen. Bij een bewaartermijn worden oudere exemplaren pas na een geslaagde automatische back-up opgeruimd; de nieuwste blijft altijd behouden. Back-ups staan op dezelfde dataset als de app: zorg ook voor een kopie op een andere locatie.</p>' : ""}</details>`).join("")}${field("settings_effective_from", "Ingangsmoment (leeg = direct; Nederlandse tijd)", "datetime-local")}${area("settings_reason", "Reden voor wijziging")}${formError()}<button type="submit" class="primary">Instellingen als nieuwe versie bewaren</button></form><details><summary>Versiehistorie (${result.history?.length || 0})</summary>${result.history?.length ? result.history.map((v) => `<details><summary>Versie ${esc(v.id)} · vanaf ${date(v.effective_from)}</summary><p class="hint">${esc(v.reason)}</p><div class="table-wrap"><table><tbody>${SETTINGS_GROUPS.flatMap(([, fields]) => fields.map(([key, label]) => `<tr><td>${label}</td><td>${fmt(v.settings[key])}</td></tr>`)).join("")}<tr><td>Modelinvoerprofiel</td><td>${profileLabel(v.settings.model_feature_profile || "basic")}</td></tr><tr><td>Daglichtbenadering toegestaan</td><td>${v.settings.environment_include_daylight_estimate ? "Ja" : "Nee"}</td></tr></tbody></table></div></details>`).join("") : '<p class="hint">De zichtbare beginwaarden zijn nog niet als nieuwe versie gewijzigd.</p>'}</details><p class="hint">${esc(result.infrastructure)}</p>`;
     $("#settings_reason").required = true;
     $("#settings_reason").minLength = 3;
     bindForm("#settings-form", async (d) => {
@@ -1507,7 +1599,12 @@ async function settingsPanel() {
         method: "POST",
         body: {
           settings: {
+            // Behoud instellingen die niet in dit formulier staan (bijv. de koppelingsschakelaar).
+            ...appSettings,
             ...settings,
+            trusted_proxies: d.trusted_proxies || "",
+            strict_origin_check: d.strict_origin_check === "on",
+            mfa_required_admins: d.mfa_required_admins === "on",
             model_feature_profile: d.model_feature_profile,
             environment_include_daylight_estimate:
               d.environment_include_daylight_estimate === "on",
@@ -1613,12 +1710,13 @@ function userForm(u) {
       )
       .join(
         "",
-      )}</select></div>${u ? `<label class="inline field"><input type="checkbox" name="active" ${u.active !== false ? "checked" : ""}> Account actief</label>` : ""}${formError()}<button type="submit" class="primary">Account opslaan</button></form>`,
+      )}</select></div>${u ? `<label class="inline field"><input type="checkbox" name="active" ${u.active !== false ? "checked" : ""}> Account actief</label>` : ""}${u?.mfa_enabled ? '<label class="inline field"><input type="checkbox" name="mfa_reset"> Tweestapsverificatie resetten (bijv. telefoon kwijt); de gebruiker stelt die daarna opnieuw in</label>' : ""}${formError()}<button type="submit" class="primary">Account opslaan</button></form>`,
   );
   bindForm("#user-form", async (d) => {
     const body = { ...d };
     if (u) {
       body.active = d.active === "on";
+      body.mfa_reset = d.mfa_reset === "on";
       if (!body.password) delete body.password;
     }
     await api(u ? `/api/users/${u.id}` : "/api/users", {
@@ -1848,6 +1946,7 @@ function applyPermissions() {
       "edit-plan",
       "event-btn",
       "harvest-btn",
+      "harvest-correct-btn",
       "cultivation-state",
       "new-variety",
       "new-scenario",
@@ -2017,14 +2116,119 @@ async function cropProfilesPanel() {
       panel.innerHTML = `<h2>Soort- en seizoensprofielen</h2><p class="notice error">${esc(error.message)}</p>`;
   }
 }
+function securityFields(settings) {
+  return String(
+    html`<div class="form-grid">${raw(field("trusted_proxies", "Vertrouwde proxy's (IP of CIDR, komma-gescheiden; leeg = geen)", "text", settings.trusted_proxies || "", 'maxlength="1000" placeholder="bijv. 172.16.0.0/12"'))}</div><p class="hint">Alleen van deze adressen wordt <code>X-Forwarded-For</code> gebruikt om het echte IP-adres te bepalen (aanmeldbeperking per account én per IP). Vul het adres of netwerk van je reverse proxy of tunnel in (bijv. het Docker-netwerk van cloudflared op TrueNAS). Zonder proxy leeg laten.</p><label class="inline field"><input type="checkbox" name="strict_origin_check" ${settings.strict_origin_check !== false ? "checked" : ""}> Strikte oorsprongcontrole: schrijfverzoeken zonder Origin moeten een Referer van deze site hebben</label><label class="inline field"><input type="checkbox" name="mfa_required_admins" ${settings.mfa_required_admins ? "checked" : ""}> Tweestapsverificatie verplicht voor beheerders (zet eerst MFA aan voor je eigen account)</label>`,
+  );
+}
+async function mfaPanel(setup = null) {
+  const alive = pageOwner("manage"),
+    panel = $("#mfa-panel");
+  if (!alive() || !panel) return;
+  try {
+    const status = await api("/api/auth/mfa");
+    if (!alive() || !panel.isConnected) return;
+    const required = status.mfa_setup_required
+      ? html`<p class="notice warn">Tweestapsverificatie is verplicht voor beheerders. Beheerfuncties zijn beschikbaar zodra je deze hebt ingesteld.</p>`
+      : "";
+    if (status.mfa_enabled) {
+      panel.innerHTML = String(
+        html`<h2>Tweestapsverificatie</h2><p>${raw(tag("Aan"))} Bij aanmelden vraagt de app een code uit je authenticator-app.</p><details><summary>Uitzetten</summary><form id="mfa-disable-form"><div class="form-grid">${raw(field("mfa_password", "Wachtwoord", "password", "", 'required autocomplete="current-password"'))}${raw(field("mfa_code", "Huidige code", "text", "", 'required inputmode="numeric" autocomplete="one-time-code"'))}</div>${raw(formError())}<button type="submit" class="danger">Tweestapsverificatie uitzetten</button></form></details>`,
+      );
+      bindForm("#mfa-disable-form", async (d) => {
+        await api("/api/auth/mfa/disable", {
+          method: "POST",
+          body: { password: d.mfa_password, code: d.mfa_code.replace(/\s/g, "") },
+        });
+        toast("Tweestapsverificatie uitgezet");
+        await mfaPanel();
+      });
+      return;
+    }
+    panel.innerHTML = String(
+      html`<h2>Tweestapsverificatie</h2>${required}<p class="hint">Optioneel: beveilig je account met een code uit een authenticator-app (bijv. Microsoft Authenticator, Google Authenticator of 1Password). Standaard staat dit uit.</p>${
+        setup
+          ? html`<div class="notice"><p>Scan de QR-code of voer de sleutel handmatig in, en bevestig met de code die de app toont.</p>${setup.qr ? html`<img src="${setup.qr}" alt="QR-code voor authenticator-app" width="200" height="200" style="background:#fff;padding:8px;border-radius:8px">` : ""}<p><code>${setup.secret}</code></p></div><form id="mfa-enable-form"><div class="form-grid">${raw(field("mfa_code", "Code uit de app", "text", "", 'required inputmode="numeric" autocomplete="one-time-code"'))}</div>${raw(formError())}<button type="submit" class="primary">Bevestigen en aanzetten</button></form>`
+          : html`<button id="mfa-start">Tweestapsverificatie instellen</button>`
+      }`,
+    );
+    if ($("#mfa-start", panel))
+      $("#mfa-start", panel).onclick = async () => {
+        try {
+          await mfaPanel(await api("/api/auth/mfa/setup", { method: "POST", body: {} }));
+        } catch (e) {
+          toast(e.message);
+        }
+      };
+    bindForm("#mfa-enable-form", async (d) => {
+      const updated = await api("/api/auth/mfa/enable", {
+        method: "POST",
+        body: { code: d.mfa_code.replace(/\s/g, "") },
+      });
+      toast("Tweestapsverificatie staat aan");
+      const wasRequired = status.mfa_setup_required;
+      user = { ...user, ...updated };
+      sessionStorage.setItem("chrysant-user", JSON.stringify(user));
+      if (wasRequired) manage();
+      else await mfaPanel();
+    });
+  } catch (error) {
+    if (alive() && panel.isConnected)
+      panel.innerHTML = String(
+        html`<h2>Tweestapsverificatie</h2><p class="notice error">${error.message}</p>`,
+      );
+  }
+}
+const bytes = (n) =>
+  n == null
+    ? "—"
+    : n >= 1e9
+      ? fmt(n / 1e9, " GB")
+      : n >= 1e6
+        ? fmt(n / 1e6, " MB")
+        : fmt(n / 1e3, " kB");
+async function backupStatusPanel() {
+  const alive = pageOwner("manage"),
+    panel = $("#backup-status");
+  if (!alive() || !panel) return;
+  try {
+    const s = await api("/api/backups/status");
+    if (!alive() || !panel.isConnected) return;
+    panel.innerHTML = String(
+      html`<p class="hint">Schijf: ${bytes(s.schijf.vrij_bytes)} vrij van ${bytes(s.schijf.totaal_bytes)} · ${s.aantal} back-up(s), samen ${bytes(s.totaal_bytes)} · bewaartermijn: ${s.bewaardagen ? s.bewaardagen + " dagen" : "onbeperkt"} (instelbaar bij Algemene instellingen → Automatische back-ups)</p>${s.advies.map((a) => html`<p class="notice warn">${a}</p>`)}<p class="notice">${s.offsite_waarschuwing}</p>`,
+    );
+  } catch (error) {
+    if (alive() && panel.isConnected)
+      panel.innerHTML = String(html`<p class="notice error">${error.message}</p>`);
+  }
+}
 async function koppelsleutelsPanel(nieuw = null) {
   const alive = pageOwner("manage"),
     panel = $("#koppelsleutels");
   if (!alive() || !panel) return;
   try {
-    const keys = list(await api("/api/koppelsleutels"));
+    const [keys, status] = await Promise.all([
+      api("/api/koppelsleutels").then(list),
+      api("/api/koppeling/status"),
+    ]);
     if (!alive() || !panel.isConnected) return;
-    panel.innerHTML = `<h2>Bedrijfskoppeling (alleen-lezen API)</h2><p class="hint">Sleutels voor het Bedrijfsdashboard en andere bedrijfsapps. Zij geven alleen leestoegang tot samenvatting en datasets via <code>/api/koppeling/v1</code>; gewichten verschijnen daar alleen uit een vrijgegeven model. De volledige sleutel wordt één keer getoond.</p>${nieuw ? `<div class="notice warn" role="status"><strong>Kopieer deze sleutel nu.</strong> Hij wordt niet opnieuw getoond.<div class="field" style="margin-top:10px"><label for="koppelsleutel-waarde">Sleutel voor ${esc(nieuw.naam)}</label><input id="koppelsleutel-waarde" readonly value="${esc(nieuw.sleutel)}"></div></div>` : ""}<form id="koppelsleutel-form"><div class="form-grid">${field("koppel_naam", "Naam (bijv. Bedrijfsdashboard)", "text", "", 'required maxlength="100"')}</div>${formError()}<button type="submit">＋ Sleutel aanmaken</button></form>${keys.length ? `<div class="table-wrap"><table><thead><tr><th>Naam</th><th>Begint met</th><th>Aangemaakt</th><th>Laatst gebruikt</th><th>Status</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td>${esc(k.naam)}</td><td><code>${esc(k.voorvoegsel)}…</code></td><td>${dateTime(k.aangemaakt_op)}${k.aangemaakt_door ? " · " + esc(k.aangemaakt_door) : ""}</td><td>${dateTime(k.laatst_gebruikt_op)}</td><td>${k.actief ? tag("Actief") : tag("Ingetrokken " + date(k.ingetrokken_op), "gray")}</td><td>${k.actief ? `<button class="small danger" data-koppelsleutel="${k.id}">Intrekken</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : empty("Nog geen koppelsleutels", "Maak een sleutel aan zodra het Bedrijfsdashboard gegevens moet ophalen.")}`;
+    panel.innerHTML = `<h2>Bedrijfskoppeling (alleen-lezen API)</h2>${String(html`<label class="inline field"><input type="checkbox" id="koppeling-aan" ${status.ingeschakeld ? "checked" : ""}> <strong>Bedrijfskoppeling ingeschakeld</strong></label><p class="hint">${status.ingeschakeld ? "De koppel-API beantwoordt verzoeken met een geldige sleutel." : "Uit (standaard): alle verzoeken naar /api/koppeling/v1 worden geweigerd, ook met een geldige sleutel. Sleutels kun je wel alvast beheren."}</p>`)}<p class="hint">Sleutels voor het Bedrijfsdashboard en andere bedrijfsapps. Zij geven alleen leestoegang tot samenvatting en datasets via <code>/api/koppeling/v1</code>; gewichten verschijnen daar alleen uit een vrijgegeven model. De volledige sleutel wordt één keer getoond.</p>${nieuw ? `<div class="notice warn" role="status"><strong>Kopieer deze sleutel nu.</strong> Hij wordt niet opnieuw getoond.<div class="field" style="margin-top:10px"><label for="koppelsleutel-waarde">Sleutel voor ${esc(nieuw.naam)}</label><input id="koppelsleutel-waarde" readonly value="${esc(nieuw.sleutel)}"></div></div>` : ""}<form id="koppelsleutel-form"><div class="form-grid">${field("koppel_naam", "Naam (bijv. Bedrijfsdashboard)", "text", "", 'required maxlength="100"')}</div>${formError()}<button type="submit">＋ Sleutel aanmaken</button></form>${keys.length ? `<div class="table-wrap"><table><thead><tr><th>Naam</th><th>Begint met</th><th>Aangemaakt</th><th>Laatst gebruikt</th><th>Status</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td>${esc(k.naam)}</td><td><code>${esc(k.voorvoegsel)}…</code></td><td>${dateTime(k.aangemaakt_op)}${k.aangemaakt_door ? " · " + esc(k.aangemaakt_door) : ""}</td><td>${dateTime(k.laatst_gebruikt_op)}</td><td>${k.actief ? tag("Actief") : tag("Ingetrokken " + date(k.ingetrokken_op), "gray")}</td><td>${k.actief ? `<button class="small danger" data-koppelsleutel="${k.id}">Intrekken</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : empty("Nog geen koppelsleutels", "Maak een sleutel aan zodra het Bedrijfsdashboard gegevens moet ophalen.")}`;
+    $("#koppeling-aan", panel).onchange = async (event) => {
+      try {
+        await api("/api/koppeling/status", {
+          method: "PUT",
+          body: { ingeschakeld: event.target.checked },
+        });
+        toast(
+          event.target.checked
+            ? "Bedrijfskoppeling ingeschakeld"
+            : "Bedrijfskoppeling uitgeschakeld",
+        );
+      } catch (error) {
+        toast(error.message);
+      }
+      await koppelsleutelsPanel();
+    };
     const waarde = $("#koppelsleutel-waarde", panel);
     if (waarde) waarde.onfocus = () => waarde.select();
     bindForm("#koppelsleutel-form", async (d) => {
