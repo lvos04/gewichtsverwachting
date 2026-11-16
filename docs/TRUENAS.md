@@ -28,7 +28,7 @@ Een alternatief is Tailscale met HTTPS-toegang op het privénetwerk. PWA en offl
 
 ## Update vanaf 0.1.1
 
-Maak en download eerst een back-up. Zet de imagetag vervolgens op `v0.2.1` en behoud dezelfde datasetmount op `/data`, poort en UID/GID568. De app maakt vóór schema-upgrade zelf een consistente back-up en bewaart bestaande teelten, metingen, planning, accounts, bronnen en modellen. Schema0002 voegt profiel-/reviewtabellen en nieuwe optionele planningsvelden toe. Schema0003 voegt de specifieke werkboekprofielen en aanvullende Excel-belichting toe.
+Maak en download eerst een back-up. Zet de imagetag vervolgens op `v0.2.1` en behoud dezelfde datasetmount op `/data`, poort en UID/GID568. De app maakt vóór schema-upgrade zelf een consistente back-up en bewaart bestaande teelten, metingen, planning, accounts, bronnen en modellen. Schema0002 voegt profiel-/reviewtabellen en nieuwe optionele planningsvelden toe. Schema0003 voegt de specifieke werkboekprofielen en aanvullende Excel-belichting toe. Schema0004 voegt koppelsleutels voor de alleen-lezen bedrijfskoppeling toe (alleen hashes).
 
 Alleen de actuele toestand van oude koppelingen en doelgewichten kan bij de migratie worden vastgelegd. Eerdere historische kennis wordt niet geraden. Een historische terugtest kan daarom bij zulke vroege peilmomenten onbekende bronnen of doelen melden. Nieuwe versiegeschiedenis groeit vanaf de upgrade.
 

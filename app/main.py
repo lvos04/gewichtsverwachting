@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text, select, func
 
-from . import auth, core, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
+from . import __version__, auth, core, koppeling, importer, forecast, operations, settings, crop_profiles, environment, history_import, insights, legacy_lighting
 from .backups import create_backup
 from .db import DATA_DIR, SessionLocal, engine
 from .models import (Cultivation, CultivationRevision, Measurement, PlanningVersion, Event,
@@ -111,7 +111,7 @@ async def lifespan(app):
     legacy_lighting.shutdown_worker()
     importer.shutdown_worker()
 
-app = FastAPI(title='Gewichtsverwachting chrysant', version='0.2.1', lifespan=lifespan,
+app = FastAPI(title='Gewichtsverwachting chrysant', version=__version__, lifespan=lifespan,
               docs_url=None if os.environ.get('DISABLE_API_DOCS') == '1' else '/docs')
 
 app.add_middleware(importer.ImportUploadLimitMiddleware)
@@ -149,12 +149,13 @@ app.include_router(environment.router)
 app.include_router(history_import.router)
 app.include_router(insights.router)
 app.include_router(legacy_lighting.router)
+koppeling.install(app)
 
 @app.get('/health', include_in_schema=False)
 def health():
     with engine.connect() as connection:
         connection.execute(text('SELECT 1'))
-    return {'status': 'ok', 'version': '0.2.1'}
+    return {'status': 'ok', 'version': __version__}
 
 @app.get('/sw.js', include_in_schema=False)
 def service_worker():

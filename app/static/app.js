@@ -1306,7 +1306,7 @@ async function manage() {
     ) +
     `${user.role === "admin" ? '<section class="card" id="general-settings"><p class="hint">Algemene instellingen laden…</p></section><section class="card" id="crop-profiles"><p class="hint">Seizoensprofielen laden…</p></section>' : ""}<div class="two"><div><section class="card"><div class="section-title"><h2>Soorten & doelgewicht</h2><button id="new-variety" class="small">＋ Soort</button></div><div class="table-wrap"><table><thead><tr><th>Soort</th><th>Doelgewicht</th><th></th></tr></thead><tbody>${varieties.map((v) => `<tr><td>${esc(v.name)} ${v.active === false ? tag("Historisch / inactief", "gray") : ""}</td><td>${fmt(v.target_weight_g, " g")}</td><td>${user.role === "admin" ? `<button class="small" data-variety="${v.id}">Wijzigen</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section><section class="card"><div class="section-title"><h2>Koppelingen met ingangsdatum</h2><button id="new-mapping" class="small">＋ Koppeling</button></div><p class="hint">Oude situaties blijven historisch intact. Kranen 41–45 hebben geen bevestigde kaptoewijzing.</p><div class="field"><label for="mapping-filter">Kap</label><select id="mapping-filter">${Array.from({ length: 40 }, (_, i) => `<option value="${i + 1}">Kap ${i + 1}</option>`).join("")}</select></div><div id="mapping-list"></div></section><section class="card"><h2>Oppervlakte per kap</h2><p class="hint">Een onbekende oppervlakte blijft leeg; zij wordt niet geschat.</p><form id="bay-settings"><div class="form-grid"><div class="field"><label for="bay-edit">Kap</label><select id="bay-edit" name="number">${options(bays, "number", (b) => "Kap " + b.number)}</select></div>${field("area_m2", "Oppervlakte (m²)", "number", bays[0]?.area_m2 || "", 'min="0.1" step="0.1"')}</div>${formError()}<button type="submit">Oppervlakte bewaren</button></form></section></div><div>${user.role === "admin" ? `<section class="card"><div class="section-title"><h2>Gebruikers</h2><button id="new-user" class="small">＋ Account</button></div>${users.map((u) => `<div style="display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)"><span><strong>${esc(u.username)}</strong><br><small class="muted">${esc(u.role)} · ${u.active === false ? "inactief" : "actief"}</small></span><button class="small" data-user="${u.id}">Beheren</button></div>`).join("")}</section><section class="card"><h2>Export & back-up</h2><p class="hint">Exporteer de bedrijfsregistratie of maak een consistente serverback-up inclusief bestanden.</p><div class="actions"><a class="btn" href="/api/export">↓ Volledige export</a><button id="backup-now">＋ Back-up maken</button></div><div id="backup-result"></div>${backups.length ? `<details><summary>Bewaarde back-ups (${backups.length})</summary>${backups.map((b) => `<p class="hint"><a href="/api/backups/${encodeURIComponent(b.filename)}">${esc(b.filename)}</a> · ${fmt(b.size / 1024, " kB")} · ${date(b.created_at)}</p>`).join("")}</details>` : ""}</section>` : '<section class="notice">Alleen beheerders kunnen gebruikers, oppervlakte, kalibraties en back-ups wijzigen.</section>'}</div></div>${
       user.role === "admin"
-        ? `<section class="card"><div class="section-title"><h2>Gevalideerde eenheden & lichtinstellingen</h2><button id="new-calibration">＋ Validatie vastleggen</button></div><p class="hint">Leg alleen bevestigde bronbetekenissen en instellingen vast. Zonder bevestigde eenheid, lampkanaal of scherminvloed blijft de DLI ongeverifieerd.</p>${calibrations.length ? calibrations.map((c) => `<details><summary>${esc(c.kind)} · ${esc(c.label || "")} · ${esc(c.object_type || "")} ${esc(c.object_number || "")} · vanaf ${date(c.valid_from)}</summary>${json(c)}</details>`).join("") : empty("Nog geen bronvalidaties", "De actuele installatieconfiguratie wordt niet naar historische jaren teruggeprojecteerd.")}<details><summary>Laatst geregistreerde wijzigingen</summary>${
+        ? `<section class="card" id="koppelsleutels"><p class="hint">Koppelsleutels laden…</p></section><section class="card"><div class="section-title"><h2>Gevalideerde eenheden & lichtinstellingen</h2><button id="new-calibration">＋ Validatie vastleggen</button></div><p class="hint">Leg alleen bevestigde bronbetekenissen en instellingen vast. Zonder bevestigde eenheid, lampkanaal of scherminvloed blijft de DLI ongeverifieerd.</p>${calibrations.length ? calibrations.map((c) => `<details><summary>${esc(c.kind)} · ${esc(c.label || "")} · ${esc(c.object_type || "")} ${esc(c.object_number || "")} · vanaf ${date(c.valid_from)}</summary>${json(c)}</details>`).join("") : empty("Nog geen bronvalidaties", "De actuele installatieconfiguratie wordt niet naar historische jaren teruggeprojecteerd.")}<details><summary>Laatst geregistreerde wijzigingen</summary>${
             audits.length
               ? `<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Actie</th><th>Object</th><th>Details</th></tr></thead><tbody>${audits
                   .slice(0, 100)
@@ -1320,7 +1320,7 @@ async function manage() {
         : ""
     }`;
   if (user.role === "admin")
-    await Promise.allSettled([settingsPanel(), cropProfilesPanel()]);
+    await Promise.allSettled([settingsPanel(), cropProfilesPanel(), koppelsleutelsPanel()]);
   if (!alive()) return;
   function drawMappings() {
     const selected = +$("#mapping-filter").value;
@@ -2050,6 +2050,49 @@ async function cropProfilesPanel() {
   } catch (error) {
     if (alive() && panel.isConnected)
       panel.innerHTML = `<h2>Soort- en seizoensprofielen</h2><p class="notice error">${esc(error.message)}</p>`;
+  }
+}
+async function koppelsleutelsPanel(nieuw = null) {
+  const alive = pageOwner("manage"),
+    panel = $("#koppelsleutels");
+  if (!alive() || !panel) return;
+  try {
+    const keys = list(await api("/api/koppelsleutels"));
+    if (!alive() || !panel.isConnected) return;
+    panel.innerHTML = `<h2>Bedrijfskoppeling (alleen-lezen API)</h2><p class="hint">Sleutels voor het Bedrijfsdashboard en andere bedrijfsapps. Zij geven alleen leestoegang tot samenvatting en datasets via <code>/api/koppeling/v1</code>; gewichten verschijnen daar alleen uit een vrijgegeven model. De volledige sleutel wordt één keer getoond.</p>${nieuw ? `<div class="notice warn" role="status"><strong>Kopieer deze sleutel nu.</strong> Hij wordt niet opnieuw getoond.<div class="field" style="margin-top:10px"><label for="koppelsleutel-waarde">Sleutel voor ${esc(nieuw.naam)}</label><input id="koppelsleutel-waarde" readonly value="${esc(nieuw.sleutel)}"></div></div>` : ""}<form id="koppelsleutel-form"><div class="form-grid">${field("koppel_naam", "Naam (bijv. Bedrijfsdashboard)", "text", "", 'required maxlength="100"')}</div>${formError()}<button type="submit">＋ Sleutel aanmaken</button></form>${keys.length ? `<div class="table-wrap"><table><thead><tr><th>Naam</th><th>Begint met</th><th>Aangemaakt</th><th>Laatst gebruikt</th><th>Status</th><th></th></tr></thead><tbody>${keys.map((k) => `<tr><td>${esc(k.naam)}</td><td><code>${esc(k.voorvoegsel)}…</code></td><td>${dateTime(k.aangemaakt_op)}${k.aangemaakt_door ? " · " + esc(k.aangemaakt_door) : ""}</td><td>${dateTime(k.laatst_gebruikt_op)}</td><td>${k.actief ? tag("Actief") : tag("Ingetrokken " + date(k.ingetrokken_op), "gray")}</td><td>${k.actief ? `<button class="small danger" data-koppelsleutel="${k.id}">Intrekken</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : empty("Nog geen koppelsleutels", "Maak een sleutel aan zodra het Bedrijfsdashboard gegevens moet ophalen.")}`;
+    const waarde = $("#koppelsleutel-waarde", panel);
+    if (waarde) waarde.onfocus = () => waarde.select();
+    bindForm("#koppelsleutel-form", async (d) => {
+      const created = await api("/api/koppelsleutels", {
+        method: "POST",
+        body: { naam: d.koppel_naam },
+      });
+      toast("Koppelsleutel aangemaakt");
+      await koppelsleutelsPanel(created);
+    });
+    $$("[data-koppelsleutel]", panel).forEach(
+      (button) =>
+        (button.onclick = async () => {
+          if (
+            !confirm(
+              "Deze koppelsleutel intrekken? Apps die hem gebruiken verliezen direct toegang.",
+            )
+          )
+            return;
+          try {
+            await api(`/api/koppelsleutels/${button.dataset.koppelsleutel}`, {
+              method: "DELETE",
+            });
+            toast("Koppelsleutel ingetrokken");
+            await koppelsleutelsPanel();
+          } catch (error) {
+            toast(error.message);
+          }
+        }),
+    );
+  } catch (error) {
+    if (alive() && panel.isConnected)
+      panel.innerHTML = `<h2>Bedrijfskoppeling</h2><p class="notice error">${esc(error.message)}</p>`;
   }
 }
 function cropProfileForm(profile) {

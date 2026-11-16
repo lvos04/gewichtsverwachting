@@ -22,7 +22,7 @@ docker run --rm -p 8000:8000 -e DATA_DIR=/data -v chrysant-data:/data gewichtsve
 
 Bij een bedrijfsproxy met een eigen vertrouwde CA kan de bouw optioneel `--secret id=build_ca,src=/pad/naar/ca-bundle.pem` gebruiken. Certificaatcontrole blijft ingeschakeld; de CA wordt niet in de image opgeslagen.
 
-[Installatie op TrueNAS via Custom App](docs/TRUENAS.md) · [gebruik en import](docs/GEBRUIK.md) · [back-up en herstel](docs/HERSTEL.md) · [model en seizoen](docs/MODEL.md) · [historische Excel-import](docs/EXCEL.md)
+[Installatie op TrueNAS via Custom App](docs/TRUENAS.md) · [gebruik en import](docs/GEBRUIK.md) · [back-up en herstel](docs/HERSTEL.md) · [model en seizoen](docs/MODEL.md) · [historische Excel-import](docs/EXCEL.md) · [bedrijfskoppeling API](docs/koppeling-api.md)
 
 ## Tijd van het jaar
 

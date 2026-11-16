@@ -163,6 +163,9 @@ class UserIn(CoreSchema):
         return self
 @router.get('/api/dashboard')
 def dashboard(db:Session=Depends(get_db), user:User=Depends(require_user)):
+    return dashboard_data(db)
+def dashboard_data(db:Session):
+    """Shared by the web dashboard and the read-only company link API."""
     from .settings import effective_settings
     settings=effective_settings(db)
     cs=db.scalars(select(Cultivation)).all()

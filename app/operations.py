@@ -276,7 +276,7 @@ def backup_download(filename: str, user: User = Depends(require_admin)):
 @router.get('/api/export')
 def export_data(user: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Excel-readable UTF-8 CSVs; no auth secrets or password hashes."""
-    excluded = {'users', 'auth_sessions', 'login_attempts', 'alembic_version'}
+    excluded = {'users', 'auth_sessions', 'login_attempts', 'koppelsleutels', 'alembic_version'}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
         for table in Base.metadata.sorted_tables:
