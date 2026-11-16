@@ -45,7 +45,8 @@ standaardwaarden behouden het bestaande gedrag, behalve waar dat aantoonbaar onv
 * Invoerschema's in `app/core_schemas.py`; zuivere webhulpfuncties in `app/static/js/util.js`.
 * ruff (alleen echte fouten) en ruff-format (nieuwe modules) in CI.
 * Versie uit één bron (`app/__init__.py`); `pyproject.toml` leest die dynamisch.
-* Image-workflow: handmatig starten vanaf een branch publiceert `preview`, `sha-<kort>` en `<versie>-rc` (nooit `latest`).
+* Image-workflow: een push naar een `ccr-*`-branch of handmatig starten publiceert `<versie>-rc`, `branch-<naam>` en
+  `sha-<kort>` (handmatig ook `preview`), nooit `latest`. Tag-builds `v*` ongewijzigd.
 
 ### Migratie
 * Schema `0005`: MFA-velden op `users`, tabel `mfa_challenges`, en `supersedes_id`/`reason`/`author_id` op

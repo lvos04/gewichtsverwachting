@@ -1,12 +1,14 @@
 name: Versie-image publiceren
 # Tags v* → versie-image (ongewijzigd, inclusief het automatische latest-gedrag van
 # docker/metadata-action voor tags).
-# Handmatig (workflow_dispatch, vanaf elke branch) → testimage met de tags
-# `preview`, `sha-<korte commit>` en `<versie>-rc` (versie uit app/__init__.py).
-# Een handmatige run zet nooit `latest`.
+# Testbuilds (push naar een `ccr-*`-branch of handmatig via workflow_dispatch) →
+# tags `<versie>-rc` (versie uit app/__init__.py), `branch-<naam>` en
+# `sha-<korte commit>`; handmatig daarnaast `preview`.
+# Een testbuild zet nooit `latest`.
 on:
   push:
     tags: ['v*']
+    branches: ['ccr-*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,12 +32,13 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           flavor: |
-            latest=${{ github.event_name == 'workflow_dispatch' && 'false' || 'auto' }}
+            latest=${{ startsWith(github.ref, 'refs/tags/') && 'auto' || 'false' }}
           tags: |
             type=ref,event=tag
             type=raw,value=preview,enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=${{ steps.versie.outputs.versie }}-rc,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch,prefix=branch-
+            type=sha,prefix=sha-,format=short,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=${{ steps.versie.outputs.versie }}-rc,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: docker/build-push-action@v6
         with:
           context: .
