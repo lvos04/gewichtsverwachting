@@ -1,0 +1,15 @@
+.git
+.venv
+data
+__pycache__
+.pytest_cache
+.codex-attachments
+*.zip
+.pytest_cache
+**/__pycache__
+tests
+docs
+README.md
+.gitignore
+.github
+requirements-dev.txt

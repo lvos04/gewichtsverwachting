@@ -1,0 +1,21 @@
+# Gebruik
+
+Maak eerst een kapteelt met ronde, kap, soort en bedden. Bij twee soorten in één kap maakt u twee kapteelten met samen maximaal zes bedden. Voeg plantdatum, licht-uitdatum, verwachte oogst en dichtheid toe. Latere wijzigingen worden nieuwe planningversies; een reden is verplicht. Werkelijke meettijdstippen blijven staan wanneer licht-uit wordt gecorrigeerd, KD-dagen worden opnieuw getoond.
+
+**Meten:** volg KD10 en KD30 bij dezelfde meetkap. Weeg vijf verse takken afzonderlijk met 0,1 g resolutie en meet vijf lengtes, elk met een vaste verschillende meetplek. De app berekent gemiddelde en spreiding en markeert een afwijkende KD-meetdag. Uitsluiten vraagt een reden; oorspronkelijke waarden blijven behouden. Een pilot is een apart meettype. Het dashboard leidt aanstaande meetmomenten af uit echte planningen.
+
+**Offline:** open de app eerst online en meld aan. Een meetconcept en verzendwachtrij blijven per gebruiker op de telefoon bewaard. Een groene verzendbevestiging betekent dat de server heeft opgeslagen. Een wachtrijmelding betekent dat dit nog niet is gebeurd. Na sessieverval moet dezelfde gebruiker opnieuw aanmelden. Wis browseropslag pas nadat de wachtrij leeg is. Een andere account kan de vorige gebruiker zijn concepten niet zien via de app.
+
+**Priva:** upload één CSV, meerdere CSV’s of een ZIP met uitsluitend CSV’s in eventuele submappen. De originele bouwpakket-ZIP bevat ook documenten; kies de CSV’s daaruit of maak een CSV-ZIP. De verkenning draait als achtergrondtaak. Bekijk daadwerkelijke jaren, datumbereik, afdelingen, kwaliteitsmeldingen en het voorbeeld; bevestig dan de import. Dubbele bestanden maken geen dubbele meetwaarden. Herroepen verbergt de bron uit analyses maar behoudt origineel en auditspoor. Een gewijzigde bron wordt een nieuwe versie. Onderbroken bevestigde importen zijn herstartbaar.
+
+Grenzen: maximaal 64 MB per uploadbestand, 256 MB per upload, 2000 CSV-bestanden en 512 MB uitgepakte CSV-inhoud; grotere historie in meerdere batches. Kalenderdatums zijn leidend, nooit bestandsweeknummers. Tweecijferige jaren 00–69 betekenen 2000–2069; oudere jaartallen vereisen vier cijfers. De huidige kraan/kap-koppeling start op de bevestigde datum. Leg historische mappingversies eerst vast voordat u oude kapberekeningen vertrouwt. Kranen 41–45 blijven zonder bevestiging ongekoppeld.
+
+**Klimaat:** eenheden en kanaal-/schermbetekenis moeten bevestigd worden. CO₂=0 in afdelingen 1/3 is onbekend, geen echte nul. Gemeten PAR=0 en kanaal 2 krijgen kwaliteitsmeldingen. Daglichtcorrectie met uitsluitend een percentage open schermuren is niet toegestaan. Verifieer de calibratie vóór u lichtsommen als betrouwbaar gebruikt.
+
+**Kaarten:** selecteer teelten en print twee kaarten per A4. De QR bevat teelt-ID en planningversie. Upload een kaartfoto, controleer foto en lokale OCR naast elkaar, vul/corrigeer de relevante regels en bevestig ze. OCR-handschrift is niet gegarandeerd betrouwbaar; zonder herkenning blijft handmatige invoer beschikbaar. Er worden vóór bevestiging geen teeltgebeurtenissen uit de foto opgeslagen. Nog niet bevestigde streeflengten of tussenlicht worden niet geraden.
+
+**Oogst:** bewaar eindgewicht, aantallen en datums. Verschillende kwaliteitsklassen blijven afzonderlijk; geen gemiddelde van bijvoorbeeld 95/65 invoeren. Historisch toegewezen of ambigue soortgewichten blijven gemarkeerd en worden geen zuivere trainingslabels.
+
+De oude Excel-bronnen zijn niet meegeleverd. Er is daarom geen reconstructie of import van onbekende Excel-kolommen gemaakt. Lever die bestanden afzonderlijk aan voor een controleerbare historische Excel-import.
+
+**Alle applicatie-instellingen in Beheer:** stel de breedtegraad, meettolerantie, laatste bijstuurdag, sessieduur, aanmeldlimiet, back-upinterval en bewaartermijn, modelregularisatie, minimumaantallen en Priva-bronprioriteiten in met gewone formuliervelden. Een reden en ingangsdatum bewaren de wijzigingshistorie; terugwerkend wijzigen is geblokkeerd. Soortdoelen, kapoppervlakken, mappings, gebruikers en bronkalibraties hebben eigen beheerformulieren. Modelveiligheidsdrempels kunnen worden verhoogd, niet onder 30 kapteelten of twee onafhankelijke rondes worden gezet. Installatiepoort, HTTPS en opslagmount horen bij het TrueNAS-formulier.

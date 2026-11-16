@@ -1,0 +1,17 @@
+{
+  "name": "Chrysant · Gewichtsverwachting",
+  "short_name": "Chrysant",
+  "lang": "nl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5ef",
+  "theme_color": "#204b39",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
